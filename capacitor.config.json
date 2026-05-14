@@ -1,0 +1,10 @@
+{
+  "appId": "com.hacklingo.app",
+  "appName": "Hacklingo",
+  "webDir": "dist",
+  "plugins": {
+    "CapacitorHttp": {
+      "enabled": true
+    }
+  }
+}

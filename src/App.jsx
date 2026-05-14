@@ -159,23 +159,125 @@ const APP_URL = "https://hacklingo.tech";
 // ── ACHIEVEMENTS ───────────────────────────────────────────────────────────
 // Add new ones here — check function gets the userState and returns boolean
 const ACHIEVEMENTS = [
-  { id: "first_blood", name: "First Blood", icon: "🩸", desc: "Complete your first mission", check: (u) => (u.completedModules?.length || 0) >= 1 },
-  { id: "five_alive", name: "Five Alive", icon: "✋", desc: "Complete 5 missions", check: (u) => (u.completedModules?.length || 0) >= 5 },
-  { id: "centurion", name: "Centurion", icon: "💯", desc: "Complete 100 missions", check: (u) => (u.completedModules?.length || 0) >= 100 },
-  { id: "week_warrior", name: "Week Warrior", icon: "🔥", desc: "7-day streak", check: (u) => (u.persistence_streak || 0) >= 7 },
-  { id: "month_monk", name: "Month Monk", icon: "🧘", desc: "30-day streak", check: (u) => (u.persistence_streak || 0) >= 30 },
-  { id: "year_legend", name: "Year Legend", icon: "🏆", desc: "365-day streak", check: (u) => (u.persistence_streak || 0) >= 365 },
-  { id: "initiate", name: "Made Initiate", icon: "🔰", desc: "Reach 1,500 XP", check: (u) => (u.xp || 0) >= 1500 },
-  { id: "operative", name: "Operative", icon: "🎯", desc: "Reach 10,000 XP", check: (u) => (u.xp || 0) >= 10000 },
-  { id: "phantom", name: "Phantom Tier", icon: "🌑", desc: "Reach 50,000 XP", check: (u) => (u.xp || 0) >= 50000 },
-  { id: "hash_collector", name: "Hash Collector", icon: "💰", desc: "Accumulate 5,000 Hashes", check: (u) => (u.hashes || 0) >= 5000 },
-  { id: "hash_hoarder", name: "Hash Hoarder", icon: "🪙", desc: "Accumulate 25,000 Hashes", check: (u) => (u.hashes || 0) >= 25000 },
-  { id: "recruiter", name: "Recruiter", icon: "🤝", desc: "Refer your first operator", check: (u) => (u.referral_count || 0) >= 1 },
-  { id: "squad_builder", name: "Squad Builder", icon: "👥", desc: "Refer 5 operators", check: (u) => (u.referral_count || 0) >= 5 },
-  { id: "kingpin", name: "Kingpin", icon: "👑", desc: "Refer 25 operators", check: (u) => (u.referral_count || 0) >= 25 },
-  { id: "path_chosen", name: "Path Chosen", icon: "🗺️", desc: "Pick a team alignment", check: (u) => u.path && u.path !== "unassigned" },
-  { id: "supporter", name: "Inner Circle", icon: "💎", desc: "Become a Root Access supporter", check: (u) => u.is_supporter === true },
-  { id: "burner_carrier", name: "Burner Carrier", icon: "📱", desc: "Stockpile 3 burner phones", check: (u) => (u.burner_phones || 0) >= 3 },
+  {
+    id: "first_blood",
+    name: "First Blood",
+    icon: "🩸",
+    desc: "Complete your first mission",
+    check: (u) => (u.completedModules?.length || 0) >= 1,
+  },
+  {
+    id: "five_alive",
+    name: "Five Alive",
+    icon: "✋",
+    desc: "Complete 5 missions",
+    check: (u) => (u.completedModules?.length || 0) >= 5,
+  },
+  {
+    id: "centurion",
+    name: "Centurion",
+    icon: "💯",
+    desc: "Complete 100 missions",
+    check: (u) => (u.completedModules?.length || 0) >= 100,
+  },
+  {
+    id: "week_warrior",
+    name: "Week Warrior",
+    icon: "🔥",
+    desc: "7-day streak",
+    check: (u) => (u.persistence_streak || 0) >= 7,
+  },
+  {
+    id: "month_monk",
+    name: "Month Monk",
+    icon: "🧘",
+    desc: "30-day streak",
+    check: (u) => (u.persistence_streak || 0) >= 30,
+  },
+  {
+    id: "year_legend",
+    name: "Year Legend",
+    icon: "🏆",
+    desc: "365-day streak",
+    check: (u) => (u.persistence_streak || 0) >= 365,
+  },
+  {
+    id: "initiate",
+    name: "Made Initiate",
+    icon: "🔰",
+    desc: "Reach 1,500 XP",
+    check: (u) => (u.xp || 0) >= 1500,
+  },
+  {
+    id: "operative",
+    name: "Operative",
+    icon: "🎯",
+    desc: "Reach 10,000 XP",
+    check: (u) => (u.xp || 0) >= 10000,
+  },
+  {
+    id: "phantom",
+    name: "Phantom Tier",
+    icon: "🌑",
+    desc: "Reach 50,000 XP",
+    check: (u) => (u.xp || 0) >= 50000,
+  },
+  {
+    id: "hash_collector",
+    name: "Hash Collector",
+    icon: "💰",
+    desc: "Accumulate 5,000 Hashes",
+    check: (u) => (u.hashes || 0) >= 5000,
+  },
+  {
+    id: "hash_hoarder",
+    name: "Hash Hoarder",
+    icon: "🪙",
+    desc: "Accumulate 25,000 Hashes",
+    check: (u) => (u.hashes || 0) >= 25000,
+  },
+  {
+    id: "recruiter",
+    name: "Recruiter",
+    icon: "🤝",
+    desc: "Refer your first operator",
+    check: (u) => (u.referral_count || 0) >= 1,
+  },
+  {
+    id: "squad_builder",
+    name: "Squad Builder",
+    icon: "👥",
+    desc: "Refer 5 operators",
+    check: (u) => (u.referral_count || 0) >= 5,
+  },
+  {
+    id: "kingpin",
+    name: "Kingpin",
+    icon: "👑",
+    desc: "Refer 25 operators",
+    check: (u) => (u.referral_count || 0) >= 25,
+  },
+  {
+    id: "path_chosen",
+    name: "Path Chosen",
+    icon: "🗺️",
+    desc: "Pick a team alignment",
+    check: (u) => u.path && u.path !== "unassigned",
+  },
+  {
+    id: "supporter",
+    name: "Inner Circle",
+    icon: "💎",
+    desc: "Become a Root Access supporter",
+    check: (u) => u.is_supporter === true,
+  },
+  {
+    id: "burner_carrier",
+    name: "Burner Carrier",
+    icon: "📱",
+    desc: "Stockpile 3 burner phones",
+    check: (u) => (u.burner_phones || 0) >= 3,
+  },
 ];
 
 // ── SOUNDS ─────────────────────────────────────────────────────────────────
@@ -507,9 +609,11 @@ function AuthScreen() {
               />
               <span>
                 I am 13+ and agree to use Hacklingo for{" "}
-                <strong style={{ color: "#facc15" }}>authorized learning only</strong>.
-                I will not apply techniques to systems I don't own or have explicit
-                written permission to test.
+                <strong style={{ color: "#facc15" }}>
+                  authorized learning only
+                </strong>
+                . I will not apply techniques to systems I don't own or have
+                explicit written permission to test.
               </span>
             </label>
           </>
@@ -1519,7 +1623,9 @@ function ThreadRegenModal({ userState, onClose, theme }) {
     return `${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:${String(s).padStart(2, "0")}`;
   };
 
-  const msUntilFull = isMax ? 0 : (22 - threads) * msPerThread - (msPerThread - msUntilNext);
+  const msUntilFull = isMax
+    ? 0
+    : (22 - threads) * msPerThread - (msPerThread - msUntilNext);
 
   return (
     <div
@@ -1563,7 +1669,14 @@ function ThreadRegenModal({ userState, onClose, theme }) {
         >
           Thread Inventory
         </div>
-        <div style={{ fontSize: 11, color: "#888", marginBottom: 20, fontFamily: "monospace" }}>
+        <div
+          style={{
+            fontSize: 11,
+            color: "#888",
+            marginBottom: 20,
+            fontFamily: "monospace",
+          }}
+        >
           Threads power lesson attempts. 1 regenerates every 3 hours.
         </div>
 
@@ -1586,7 +1699,14 @@ function ThreadRegenModal({ userState, onClose, theme }) {
           >
             {isSupporter ? "∞" : `${threads} / 22`}
           </div>
-          <div style={{ fontSize: 10, color: "#888", textTransform: "uppercase", letterSpacing: 2 }}>
+          <div
+            style={{
+              fontSize: 10,
+              color: "#888",
+              textTransform: "uppercase",
+              letterSpacing: 2,
+            }}
+          >
             {isSupporter ? "Root Access · Unlimited" : "Current Threads"}
           </div>
         </div>
@@ -1730,7 +1850,9 @@ function RankProgressionModal({ userState, onClose, theme }) {
         }}
       >
         <div style={{ textAlign: "center", marginBottom: 20 }}>
-          <div style={{ fontSize: 40, marginBottom: 4 }}>{currentRank.icon}</div>
+          <div style={{ fontSize: 40, marginBottom: 4 }}>
+            {currentRank.icon}
+          </div>
           <div
             style={{
               fontSize: 18,
@@ -1784,8 +1906,8 @@ function RankProgressionModal({ userState, onClose, theme }) {
                 fontWeight: "bold",
               }}
             >
-              {(nextRank.min - currentXp).toLocaleString()} XP →{" "}
-              {nextRank.icon} {nextRank.name}
+              {(nextRank.min - currentXp).toLocaleString()} XP → {nextRank.icon}{" "}
+              {nextRank.name}
             </div>
           </div>
         )}
@@ -1895,7 +2017,8 @@ function LandingScreen({ onEnterAuth }) {
 
   // SEO: update document metadata when this screen mounts
   useEffect(() => {
-    document.title = "Hacklingo — Duolingo for Hackers · Learn Cybersecurity Free";
+    document.title =
+      "Hacklingo — Duolingo for Hackers · Learn Cybersecurity Free";
 
     const ensureMeta = (selector, attrs) => {
       let el = document.querySelector(selector);
@@ -1969,12 +2092,21 @@ function LandingScreen({ onEnterAuth }) {
       >
         {title}
       </h3>
-      <p style={{ fontSize: 13, color: "#aaa", lineHeight: 1.6, margin: 0 }}>{children}</p>
+      <p style={{ fontSize: 13, color: "#aaa", lineHeight: 1.6, margin: 0 }}>
+        {children}
+      </p>
     </div>
   );
 
   return (
-    <div style={{ background: "#000", color: "#fff", minHeight: "100vh", overflow: "auto" }}>
+    <div
+      style={{
+        background: "#000",
+        color: "#fff",
+        minHeight: "100vh",
+        overflow: "auto",
+      }}
+    >
       {/* Hero */}
       <Section style={{ paddingTop: 80, textAlign: "center" }}>
         <div
@@ -2112,10 +2244,12 @@ function LandingScreen({ onEnterAuth }) {
         </h2>
         <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
           <Card icon="🔴" title="Red Team" color="#ef4444">
-            Offensive security. Exploitation, web hacking, social engineering, adversary simulation.
+            Offensive security. Exploitation, web hacking, social engineering,
+            adversary simulation.
           </Card>
           <Card icon="🔵" title="Blue Team" color="#3b82f6">
-            Defense. Detection, incident response, forensics, hardening, SOC operations.
+            Defense. Detection, incident response, forensics, hardening, SOC
+            operations.
           </Card>
           <Card icon="🟣" title="Purple Team" color="#a855f7">
             Both worlds. The complete operator. Hardest path. Most dangerous.
@@ -2155,12 +2289,14 @@ function LandingScreen({ onEnterAuth }) {
             <span style={{ color: accent }}>cat /etc/why.md</span>
           </p>
           <p style={{ margin: "0 0 12px 0" }}>
-            Textbooks are dense. CTFs assume you already know. Bootcamps cost $15K.
+            Textbooks are dense. CTFs assume you already know. Bootcamps cost
+            $15K.
           </p>
           <p style={{ margin: "0 0 12px 0" }}>
-            Hacklingo is the bridge. <span style={{ color: accent }}>5 minutes</span> on the
-            train. <span style={{ color: accent }}>One mission</span> before bed. A streak
-            you'd be psychologically destroyed to break.
+            Hacklingo is the bridge.{" "}
+            <span style={{ color: accent }}>5 minutes</span> on the train.{" "}
+            <span style={{ color: accent }}>One mission</span> before bed. A
+            streak you'd be psychologically destroyed to break.
           </p>
           <p style={{ margin: 0, color: "#888" }}>
             Built for people who learn by doing — and who never had time for
@@ -2195,10 +2331,12 @@ function LandingScreen({ onEnterAuth }) {
             Streaks that punish missed days. Burner phones save you once.
           </Card>
           <Card icon="🎯" title="Rank Up">
-            Climb from Ghost → Initiate → Operative → Phantom → Infiltrator → Grandmaster.
+            Climb from Ghost → Initiate → Operative → Phantom → Infiltrator →
+            Grandmaster.
           </Card>
           <Card icon="👥" title="Squads">
-            Train with friends. Compete on leaderboards. Don't be the one who broke.
+            Train with friends. Compete on leaderboards. Don't be the one who
+            broke.
           </Card>
           <Card icon="🎁" title="Daily Drops">
             XP + Hashes every 24 hours. Compound with streak bonuses.
@@ -2256,7 +2394,14 @@ function LandingScreen({ onEnterAuth }) {
             >
               iOS · Safari
             </h3>
-            <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px 0", lineHeight: 1.6 }}>
+            <p
+              style={{
+                fontSize: 12,
+                color: "#888",
+                margin: "0 0 12px 0",
+                lineHeight: 1.6,
+              }}
+            >
               Add to your home screen. Works fullscreen like a native app.
             </p>
             <button
@@ -2315,11 +2460,18 @@ function LandingScreen({ onEnterAuth }) {
             >
               Android · APK
             </h3>
-            <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px 0", lineHeight: 1.6 }}>
+            <p
+              style={{
+                fontSize: 12,
+                color: "#888",
+                margin: "0 0 12px 0",
+                lineHeight: 1.6,
+              }}
+            >
               Direct download. Sideload from GitHub Releases.
             </p>
             <a
-              href="https://github.com/YOUR_USERNAME/hacklingo/releases/latest"
+              href="https://github.com/Variosity/hacklingo/releases/download/v3/hacklingo.apk"
               target="_blank"
               rel="noopener noreferrer"
               style={{
@@ -2360,7 +2512,14 @@ function LandingScreen({ onEnterAuth }) {
             >
               Web · Right now
             </h3>
-            <p style={{ fontSize: 12, color: "#888", margin: "0 0 12px 0", lineHeight: 1.6 }}>
+            <p
+              style={{
+                fontSize: 12,
+                color: "#888",
+                margin: "0 0 12px 0",
+                lineHeight: 1.6,
+              }}
+            >
               Skip the install. Just sign up and start.
             </p>
             <button
@@ -2447,12 +2606,15 @@ function LandingScreen({ onEnterAuth }) {
             ⚠ Rules of Engagement
           </div>
           Hacklingo teaches offensive and defensive techniques for{" "}
-          <strong style={{ color: "#fff" }}>educational, ethical, and authorized</strong>{" "}
-          use only. Applying these techniques to systems, networks, or people you don't own
-          or have explicit written permission to test is illegal in most jurisdictions and{" "}
-          <strong style={{ color: "#fff" }}>can result in prosecution</strong>. We do not
-          condone unauthorized access. Use what you learn here to defend, build, and harden
-          — not to harm.
+          <strong style={{ color: "#fff" }}>
+            educational, ethical, and authorized
+          </strong>{" "}
+          use only. Applying these techniques to systems, networks, or people
+          you don't own or have explicit written permission to test is illegal
+          in most jurisdictions and{" "}
+          <strong style={{ color: "#fff" }}>can result in prosecution</strong>.
+          We do not condone unauthorized access. Use what you learn here to
+          defend, build, and harden — not to harm.
         </div>
       </Section>
 
@@ -2471,16 +2633,22 @@ function LandingScreen({ onEnterAuth }) {
           [ HACKLINGO · LEARN. PERSIST. PIVOT. ]
         </div>
         <div style={{ marginBottom: 8 }}>
-          <a href="#" style={{ color: "#666", textDecoration: "none", margin: "0 8px" }}>
+          <a
+            href="#"
+            style={{ color: "#666", textDecoration: "none", margin: "0 8px" }}
+          >
             Privacy
           </a>
           ·
-          <a href="#" style={{ color: "#666", textDecoration: "none", margin: "0 8px" }}>
+          <a
+            href="#"
+            style={{ color: "#666", textDecoration: "none", margin: "0 8px" }}
+          >
             Terms
           </a>
           ·
           <a
-            href="https://github.com/YOUR_USERNAME/hacklingo"
+            href="https://github.com/Variosity/hacklingo"
             target="_blank"
             rel="noopener noreferrer"
             style={{ color: "#666", textDecoration: "none", margin: "0 8px" }}
@@ -2488,7 +2656,9 @@ function LandingScreen({ onEnterAuth }) {
             GitHub
           </a>
         </div>
-        <div style={{ color: "#333" }}>© 2026 Hacklingo. All operations classified.</div>
+        <div style={{ color: "#333" }}>
+          © 2026 Hacklingo. All operations classified.
+        </div>
       </footer>
 
       <style>{`
@@ -2503,7 +2673,9 @@ function LandingScreen({ onEnterAuth }) {
 // ── ACHIEVEMENTS MODAL ─────────────────────────────────────────────────────
 function AchievementsModal({ userState, onClose, theme }) {
   const unlocked = userState?.unlocked_achievements || [];
-  const unlockedCount = ACHIEVEMENTS.filter((a) => unlocked.includes(a.id)).length;
+  const unlockedCount = ACHIEVEMENTS.filter((a) =>
+    unlocked.includes(a.id),
+  ).length;
 
   return (
     <div
@@ -2715,7 +2887,16 @@ function OnboardingScreen({ userState, onComplete, theme }) {
         ))}
       </div>
 
-      <div style={{ flex: 1, display: "flex", flexDirection: "column", justifyContent: "center", maxWidth: 400, textAlign: "center" }}>
+      <div
+        style={{
+          flex: 1,
+          display: "flex",
+          flexDirection: "column",
+          justifyContent: "center",
+          maxWidth: 400,
+          textAlign: "center",
+        }}
+      >
         <div style={{ fontSize: 80, marginBottom: 24 }}>{current.icon}</div>
         <h2
           style={{
@@ -2741,7 +2922,15 @@ function OnboardingScreen({ userState, onComplete, theme }) {
         </p>
       </div>
 
-      <div style={{ width: "100%", maxWidth: 400, display: "flex", gap: 12, marginTop: 32 }}>
+      <div
+        style={{
+          width: "100%",
+          maxWidth: 400,
+          display: "flex",
+          gap: 12,
+          marginTop: 32,
+        }}
+      >
         {step > 0 && (
           <button
             onClick={() => setStep((s) => s - 1)}
@@ -5791,7 +5980,8 @@ function OperatorScreen({
               fontFamily: "monospace",
             }}
           >
-            {(userState.unlocked_achievements?.length || 0)} / {ACHIEVEMENTS.length}
+            {userState.unlocked_achievements?.length || 0} /{" "}
+            {ACHIEVEMENTS.length}
           </div>
         </div>
         <div
@@ -5861,8 +6051,8 @@ function OperatorScreen({
           }}
         >
           Share your code. They get{" "}
-          <strong style={{ color: theme.accent }}>+200 XP / +100 Hashes</strong> on
-          signup. You get the same when they finish their first lesson.
+          <strong style={{ color: theme.accent }}>+200 XP / +100 Hashes</strong>{" "}
+          on signup. You get the same when they finish their first lesson.
         </div>
         <div
           style={{
@@ -5939,7 +6129,8 @@ function OperatorScreen({
               fontFamily: "monospace",
             }}
           >
-            ⭐ {userState.referral_count} operator{userState.referral_count !== 1 ? "s" : ""} recruited
+            ⭐ {userState.referral_count} operator
+            {userState.referral_count !== 1 ? "s" : ""} recruited
           </div>
         )}
       </div>
@@ -5975,7 +6166,8 @@ function OperatorScreen({
             lineHeight: 1.5,
           }}
         >
-          Export everything we store about you as JSON. Required under GDPR/CCPA.
+          Export everything we store about you as JSON. Required under
+          GDPR/CCPA.
         </div>
         <button
           onClick={() => {
@@ -6678,8 +6870,7 @@ function DynamicLessonScreen({
           <button
             onClick={handleNext}
             disabled={
-              (current.type === "quiz" &&
-                !answered) ||
+              (current.type === "quiz" && !answered) ||
               (current.type === "code_practice" && !answered)
             }
             style={{
@@ -6863,7 +7054,8 @@ export default function App() {
           window.history.replaceState(
             null,
             "",
-            window.location.pathname + window.location.search.replace(/[?&]code=[^&]*/, ""),
+            window.location.pathname +
+              window.location.search.replace(/[?&]code=[^&]*/, ""),
           );
         } catch (e) {
           /* ignore */
@@ -7618,8 +7810,8 @@ export default function App() {
               fontFamily: "monospace",
             }}
           >
-            <div style={{ fontSize: 32, marginBottom: 16 }}>📡</div>
-            [ SYNCING OPERATOR DATA... ]
+            <div style={{ fontSize: 32, marginBottom: 16 }}>📡</div>[ SYNCING
+            OPERATOR DATA... ]
           </div>
         ) : !userState.onboarding_completed ? (
           <OnboardingScreen

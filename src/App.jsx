@@ -6342,7 +6342,27 @@ function DynamicLessonScreen({
   const [answerForcedReveal, setAnswerForcedReveal] = useState(false);
 
   useEffect(() => {
-    async function fetchLesson() {
+    // Validate that what Groq returned actually looks like a usable lesson.
+    // Network blips can return partial JSON, empty code blocks, or only the
+    // first 2 steps. We catch those here and either retry or surface a real error.
+    const isValidLesson = (steps) => {
+      if (!Array.isArray(steps)) return false;
+      if (steps.length < 4) return false;
+      const hasQuiz = steps.some((s) => s && s.type === "quiz");
+      if (!hasQuiz) return false;
+      // Reject any step where the code block is missing/effectively empty
+      const hasBrokenCode = steps.some(
+        (s) =>
+          s &&
+          s.type === "code" &&
+          (!s.code || String(s.code).trim().length < 10),
+      );
+      if (hasBrokenCode) return false;
+      return true;
+    };
+
+    async function fetchLesson(attempt = 0) {
+      const MAX_RETRIES = 1;
       try {
         setLoading(true);
         const {
@@ -6377,6 +6397,21 @@ function DynamicLessonScreen({
           throw new Error(`Uplink rejected: ${errDetail}`);
         }
         const generatedContent = await response.json();
+
+        if (!isValidLesson(generatedContent)) {
+          if (attempt < MAX_RETRIES) {
+            console.warn(
+              `Lesson validation failed (got ${
+                Array.isArray(generatedContent) ? generatedContent.length : 0
+              } steps) — retrying...`,
+            );
+            return fetchLesson(attempt + 1);
+          }
+          throw new Error(
+            "Briefing came back corrupted (network blip during generation). Try again.",
+          );
+        }
+
         setContent(generatedContent);
       } catch (err) {
         console.error("Lesson Gen Error:", err);
@@ -7408,13 +7443,13 @@ export default function App() {
     // 5. Instantly force the UI to update with the new threads, XP, and streaks
     setUserState(updatedState);
 
-    // 6. Persist updates. Use the anti-cheat RPC for XP/hash awards (server
-    //    validates lesson_id wasn't already claimed and XP is in valid range).
-    //    Other fields (threads, streak, completed_modules) go through the
-    //    standard updateProfile path — they're not the cheat vectors.
+    // 6. Persist updates. Use the anti-cheat RPC for XP/hash/streak awards
+    //    (server validates lesson_id wasn't already claimed, XP is in range,
+    //    and computes streak server-side so client can't game it).
+    //    Other fields (threads, overclock_tokens) go through normal update path.
     if (!isAlreadyDone) {
       try {
-        const { error: rpcError } = await supabase.rpc(
+        const { data: rpcData, error: rpcError } = await supabase.rpc(
           "award_lesson_completion",
           {
             lesson_id: lessonMeta.id,
@@ -7423,15 +7458,30 @@ export default function App() {
         );
         if (rpcError) {
           console.error("award_lesson_completion failed:", rpcError);
+          setThreadWarning("⚠ XP SYNC FAILED — try refreshing");
+          setTimeout(() => setThreadWarning(""), 4000);
+        } else if (rpcData) {
+          // Trust the server's authoritative values. Without this, local state
+          // can diverge from DB (the streak 7→8→0→7 oscillation bug).
+          updatedState.xp = rpcData.xp;
+          updatedState.hashes = rpcData.hashes;
+          if (typeof rpcData.persistence_streak === "number") {
+            updatedState.persistence_streak = rpcData.persistence_streak;
+          }
+          // Re-set state with the corrected values
+          setUserState(updatedState);
         }
       } catch (e) {
         console.error("award_lesson_completion threw:", e);
       }
-      // Strip XP/hashes/completed_modules from profileUpdates since the RPC
-      // owns those — leaves threads, streak, overclock to be updated normally
+      // Strip locked fields from the remaining updateProfile call — the RPC
+      // owns them, and trying to update them directly fails RLS silently
       delete profileUpdates.xp;
       delete profileUpdates.hashes;
       delete profileUpdates.completed_modules;
+      delete profileUpdates.persistence_streak;
+      delete profileUpdates.last_active_date;
+      delete profileUpdates.last_active;
     }
     if (Object.keys(profileUpdates).length > 0) {
       await updateProfile(profileUpdates);
@@ -7579,48 +7629,56 @@ export default function App() {
     }
   };
 
-  const handleClaimDailyReward = async (xpReward, hashReward) => {
-    const newXp = (userState.xp || 0) + xpReward;
-    const newHashes = (userState.hashes || 0) + hashReward;
-    const now = new Date().toISOString();
+  const handleClaimDailyReward = async (_xpReward, _hashReward) => {
+    // The reward amounts and eligibility check live on the server now,
+    // so the RPC is the source of truth — anti-cheat RLS blocks direct
+    // updates to xp/hashes/last_reward from the client.
+    try {
+      const { data, error } = await supabase.rpc("claim_daily_reward");
+      if (error) {
+        console.error("Daily reward claim failed:", error);
+        // The most common error is "Reward not ready yet" — surface it
+        setShowDailyReward(false);
+        setThreadWarning(
+          error.message?.includes("not ready")
+            ? "⏳ DROP NOT READY — check back later"
+            : "⚠ DROP FAILED — try again",
+        );
+        setTimeout(() => setThreadWarning(""), 3500);
+        return;
+      }
 
-    const { error } = await supabase
-      .from("profiles")
-      .update({
-        xp: newXp,
-        hashes: newHashes,
-        last_reward: now,
-      })
-      .eq("id", userState.id);
+      const xpReward = data.xp_reward;
+      const hashReward = data.hash_reward;
 
-    if (error) {
-      console.error("Daily reward claim failed:", error);
-      return;
+      setUserState({
+        ...userState,
+        xp: data.xp,
+        hashes: data.hashes,
+        last_reward: data.last_reward,
+      });
+      setShowDailyReward(false);
+      playSound("daily_reward");
+      setThreadWarning("");
+      setTimeout(() => {
+        setThreadWarning(
+          `⚡ SUPPLY DROP SECURED: +${xpReward} XP & +${hashReward} Hashes!`,
+        );
+        setTimeout(() => setThreadWarning(""), 4000);
+      }, 200);
+
+      // Check for new achievements with the authoritative server values
+      checkAchievements({
+        ...userState,
+        xp: data.xp,
+        hashes: data.hashes,
+        last_reward: data.last_reward,
+      });
+    } catch (err) {
+      console.error("Daily reward RPC threw:", err);
+      setThreadWarning("⚠ NETWORK ERROR — try again");
+      setTimeout(() => setThreadWarning(""), 3500);
     }
-
-    setUserState({
-      ...userState,
-      xp: newXp,
-      hashes: newHashes,
-      last_reward: now,
-    });
-    setShowDailyReward(false);
-    playSound("daily_reward");
-    setThreadWarning("");
-    setTimeout(() => {
-      setThreadWarning(
-        `⚡ SUPPLY DROP SECURED: +${xpReward} XP & +${hashReward} Hashes!`,
-      );
-      setTimeout(() => setThreadWarning(""), 4000);
-    }, 200);
-
-    // Check for new achievements after reward
-    checkAchievements({
-      ...userState,
-      xp: newXp,
-      hashes: newHashes,
-      last_reward: now,
-    });
   };
 
   return (

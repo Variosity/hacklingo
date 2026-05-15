@@ -6666,7 +6666,7 @@ function DynamicLessonScreen({
           let errDetail = `HTTP ${response.status}`;
           try {
             const j = await response.json();
-            errDetail = j.error || errDetail;
+            errDetail = (typeof j.error === "string" ? j.error : JSON.stringify(j.error)) || errDetail;
           } catch (_) {}
           throw new Error(`Uplink rejected: ${errDetail}`);
         }
@@ -6689,12 +6689,13 @@ function DynamicLessonScreen({
         setContent(generatedContent);
       } catch (err) {
         console.error("Lesson Gen Error:", err);
-        setErrorMsg(err.message);
+        const errMsg = err instanceof Error ? err.message : (typeof err === "string" ? err : JSON.stringify(err));
+        setErrorMsg(errMsg);
         setContent([
           {
             type: "concept",
             heading: "Transmission Failed",
-            body: "Could not connect to the Instructor AI. " + err.message,
+            body: "Could not connect to the Instructor AI. " + errMsg,
           },
           {
             type: "quiz",

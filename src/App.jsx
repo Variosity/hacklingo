@@ -59,6 +59,42 @@ const THEMES = {
     text: "#0f172a",
     cost: 10000,
   },
+  bloodmoon: {
+    id: "bloodmoon",
+    name: "Blood Moon",
+    bg: "#0d0306",
+    surface: "#1a070c",
+    accent: "#dc2626",
+    text: "#fecaca",
+    cost: 6500,
+  },
+  void: {
+    id: "void",
+    name: "Void Walker",
+    bg: "#000000",
+    surface: "#0a0a0a",
+    accent: "#a3a3a3",
+    text: "#e5e5e5",
+    cost: 8000,
+  },
+  noir: {
+    id: "noir",
+    name: "Neon Noir",
+    bg: "#0a0a14",
+    surface: "#13131f",
+    accent: "#f59e0b",
+    text: "#fde68a",
+    cost: 7500,
+  },
+  classified: {
+    id: "classified",
+    name: "Classified (Black/Gold)",
+    bg: "#000000",
+    surface: "#0e0a00",
+    accent: "#eab308",
+    text: "#fef3c7",
+    cost: 12500,
+  },
 };
 
 // ── BRUTAL PROGRESSION & LORE ────────────────────────────────────────────────
@@ -120,7 +156,10 @@ const getNextMission = (userState, curriculum) => {
   if (!userState || !userState.completedModules || !curriculum.length)
     return null;
   const activeCurriculum = curriculum.filter(
-    (track) => !track.pathLock || track.pathLock === userState.path,
+    (track) =>
+      !track.pathLock ||
+      track.pathLock === "unassigned" ||
+      track.pathLock === userState.path,
   );
   for (const track of activeCurriculum) {
     for (const mod of track.modules) {
@@ -1343,6 +1382,12 @@ function PersistenceModal({ isOpen, userState, onClose, theme }) {
             const isActive =
               streak > 0 && thisDate >= streakStart && thisDate <= today;
             const isToday = thisDate.getTime() === today.getTime();
+            // Show a red ✕ on every date in the user's recorded streak_broken_dates
+            // array (populated by the award_lesson_completion RPC when a streak
+            // resets). Falls back to no marker if the column doesn't exist yet.
+            const brokenList = userState.streak_broken_dates || [];
+            const dateStr = `${currentYear}-${String(currentMonth + 1).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+            const isStreakLost = brokenList.includes(dateStr);
 
             return (
               <div
@@ -1352,20 +1397,35 @@ function PersistenceModal({ isOpen, userState, onClose, theme }) {
                   display: "flex",
                   alignItems: "center",
                   justifyContent: "center",
-                  background: isActive ? theme.accent : "transparent",
-                  color: isActive ? "#000" : theme.text,
+                  background: isActive
+                    ? theme.accent
+                    : isStreakLost
+                      ? "rgba(239, 68, 68, 0.15)"
+                      : "transparent",
+                  color: isActive
+                    ? "#000"
+                    : isStreakLost
+                      ? "#ef4444"
+                      : theme.text,
                   border: isToday
                     ? `1px solid ${theme.accent}`
-                    : `1px solid ${theme.bg}`,
-                  opacity: isActive || isToday ? 1 : 0.4,
+                    : isStreakLost
+                      ? "1px solid #ef4444"
+                      : `1px solid ${theme.bg}`,
+                  opacity: isActive || isToday || isStreakLost ? 1 : 0.4,
                   borderRadius: 4,
                   fontSize: 12,
-                  fontWeight: isActive ? "bold" : "normal",
+                  fontWeight: isActive || isStreakLost ? "bold" : "normal",
                   fontFamily: "monospace",
-                  boxShadow: isActive ? `0 0 8px ${theme.accent}40` : "none",
+                  boxShadow: isActive
+                    ? `0 0 8px ${theme.accent}40`
+                    : isStreakLost
+                      ? "0 0 6px rgba(239, 68, 68, 0.3)"
+                      : "none",
                 }}
+                title={isStreakLost ? "Streak broken on this day" : undefined}
               >
-                {day}
+                {isStreakLost ? "✕" : day}
               </div>
             );
           })}
@@ -2813,6 +2873,124 @@ function AchievementsModal({ userState, onClose, theme }) {
 }
 
 // ── ONBOARDING SCREEN ──────────────────────────────────────────────────────
+// ── AD INTERSTITIAL (NON-SUPPORTERS ONLY) ──────────────────────────────────
+// Pops up between lessons — not a permanent banner. User can dismiss after
+// a 5-second forced view. Supporters never see this component mount at all.
+function AdInterstitial({ onDismiss, onUpgrade, theme }) {
+  const [countdown, setCountdown] = useState(5);
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const id = setTimeout(() => setCountdown((c) => c - 1), 1000);
+    return () => clearTimeout(id);
+  }, [countdown]);
+
+  useEffect(() => {
+    // Push the AdSense ad into the slot once the modal mounts
+    try {
+      if (typeof window !== "undefined") {
+        (window.adsbygoogle = window.adsbygoogle || []).push({});
+      }
+    } catch (e) {
+      /* fail silent */
+    }
+  }, []);
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.92)",
+        zIndex: 9998,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+    >
+      <div
+        style={{
+          background: theme.surface,
+          border: `1px solid ${theme.accent}40`,
+          borderRadius: 12,
+          padding: 20,
+          width: "100%",
+          maxWidth: 360,
+          textAlign: "center",
+        }}
+      >
+        <div
+          style={{
+            fontSize: 10,
+            color: "#666",
+            fontFamily: "monospace",
+            textTransform: "uppercase",
+            letterSpacing: 2,
+            marginBottom: 12,
+          }}
+        >
+          [ SPONSORED TRANSMISSION ]
+        </div>
+
+        {/* Real AdSense slot. Replace placeholders once approved. */}
+        <ins
+          className="adsbygoogle"
+          style={{
+            display: "block",
+            width: "100%",
+            minHeight: 250,
+            background: "#0a0a0a",
+            marginBottom: 16,
+          }}
+          data-ad-client="ca-pub-XXXXXXXXXXXXXXXX"
+          data-ad-slot="XXXXXXXXXX"
+          data-ad-format="auto"
+          data-full-width-responsive="true"
+        />
+
+        <button
+          onClick={onUpgrade}
+          style={{
+            width: "100%",
+            padding: 10,
+            background: "transparent",
+            border: "1px solid #a855f7",
+            color: "#a855f7",
+            borderRadius: 6,
+            fontFamily: "monospace",
+            fontSize: 11,
+            fontWeight: "bold",
+            cursor: "pointer",
+            marginBottom: 8,
+          }}
+        >
+          💎 ROOT ACCESS · KILL ALL ADS · $2.99/mo
+        </button>
+
+        <button
+          onClick={onDismiss}
+          disabled={countdown > 0}
+          style={{
+            width: "100%",
+            padding: 12,
+            background: countdown > 0 ? "#1a1a1a" : theme.accent,
+            border: "none",
+            color: countdown > 0 ? "#555" : "#000",
+            borderRadius: 6,
+            fontFamily: "monospace",
+            fontSize: 13,
+            fontWeight: "bold",
+            cursor: countdown > 0 ? "not-allowed" : "pointer",
+          }}
+        >
+          {countdown > 0 ? `CLOSE (${countdown})` : "CLOSE"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function OnboardingScreen({ userState, onComplete, theme }) {
   const [step, setStep] = useState(0);
 
@@ -3120,7 +3298,10 @@ function SkillTreeScreen({ userState, curriculum, theme, onOpenLesson }) {
   if (!userState || !curriculum.length) return null;
   const [briefingMission, setBriefingMission] = useState(null);
   const activeCurriculum = curriculum.filter(
-    (track) => !track.pathLock || track.pathLock === userState.path,
+    (track) =>
+      !track.pathLock ||
+      track.pathLock === "unassigned" ||
+      track.pathLock === userState.path,
   );
 
   return (
@@ -5038,7 +5219,7 @@ function LeaderboardScreen({ userState, theme }) {
         const { data } = await supabase
           .from("profiles")
           .select(
-            "username, xp, path_alignment, role, persistence_streak, is_supporter",
+            "id, username, xp, path_alignment, role, persistence_streak, is_supporter, completed_modules, unlocked_achievements, created_at",
           )
           .order("xp", { ascending: false })
           .limit(50);
@@ -5459,6 +5640,96 @@ function LeaderboardScreen({ userState, theme }) {
                 </div>
               </div>
             </div>
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 12,
+                marginTop: 12,
+                marginBottom: 16,
+              }}
+            >
+              <div
+                style={{
+                  background: theme.bg,
+                  padding: 12,
+                  borderRadius: 8,
+                  textAlign: "center",
+                  border: "1px solid rgba(255,255,255,0.05)",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 20,
+                    color: "#00ff88",
+                    fontWeight: "bold",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {selectedOp.completed_modules?.length || 0}
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: "#888",
+                    textTransform: "uppercase",
+                    marginTop: 4,
+                  }}
+                >
+                  Missions
+                </div>
+              </div>
+              <div
+                style={{
+                  background: theme.bg,
+                  padding: 12,
+                  borderRadius: 8,
+                  textAlign: "center",
+                  border: "1px solid rgba(255,255,255,0.05)",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 20,
+                    color: theme.accent,
+                    fontWeight: "bold",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {selectedOp.unlocked_achievements?.length || 0}
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: "#888",
+                    textTransform: "uppercase",
+                    marginTop: 4,
+                  }}
+                >
+                  Achievements
+                </div>
+              </div>
+            </div>
+            {selectedOp.created_at && (
+              <div
+                style={{
+                  textAlign: "center",
+                  fontSize: 10,
+                  color: "#666",
+                  fontFamily: "monospace",
+                  marginBottom: 8,
+                  letterSpacing: 1,
+                }}
+              >
+                ENLISTED{" "}
+                {new Date(selectedOp.created_at)
+                  .toLocaleDateString("en-US", {
+                    month: "short",
+                    year: "numeric",
+                  })
+                  .toUpperCase()}
+              </div>
+            )}
             <div
               style={{
                 textAlign: "center",
@@ -6340,6 +6611,9 @@ function DynamicLessonScreen({
   const [disabledOptions, setDisabledOptions] = useState([]);
   const [hintRevealed, setHintRevealed] = useState(false);
   const [answerForcedReveal, setAnswerForcedReveal] = useState(false);
+  // Per-step interactive state — keyed by step index.
+  // Lets us preserve quiz attempts when the user navigates back and forth.
+  const [stepStates, setStepStates] = useState({});
 
   useEffect(() => {
     // Validate that what Groq returned actually looks like a usable lesson.
@@ -6458,18 +6732,49 @@ function DynamicLessonScreen({
 
   const current = content[step];
 
+  // Snapshot the current step's interactive state so we can restore it
+  // on back/forward navigation. Without this, the user could fail a quiz,
+  // hit BACK, hit NEXT, and get a fresh 0/3 attempts to try again.
+  const captureStepState = () => ({
+    answered,
+    selectedOption,
+    codeInput,
+    wrongAttempts,
+    disabledOptions,
+    hintRevealed,
+    answerForcedReveal,
+  });
+
+  const applyStepState = (s) => {
+    setAnswered(s?.answered || false);
+    setSelectedOption(s?.selectedOption ?? null);
+    setCodeInput(s?.codeInput || "");
+    setWrongAttempts(s?.wrongAttempts || 0);
+    setDisabledOptions(s?.disabledOptions || []);
+    setHintRevealed(s?.hintRevealed || false);
+    setAnswerForcedReveal(s?.answerForcedReveal || false);
+  };
+
   const handleNext = () => {
-    if (step === content.length - 1) onComplete(lessonMeta);
-    else {
-      setStep((s) => s + 1);
-      setAnswered(false);
-      setSelectedOption(null);
-      setCodeInput("");
-      setWrongAttempts(0);
-      setDisabledOptions([]);
-      setHintRevealed(false);
-      setAnswerForcedReveal(false);
+    if (step === content.length - 1) {
+      onComplete(lessonMeta);
+      return;
     }
+    // Persist this step's state before moving on
+    setStepStates((prev) => ({ ...prev, [step]: captureStepState() }));
+    const nextStep = step + 1;
+    setStep(nextStep);
+    // Hydrate the next step's state if we've seen it before, otherwise fresh
+    applyStepState(stepStates[nextStep]);
+  };
+
+  const handleBack = () => {
+    if (step === 0) return;
+    // Persist this step's state too, so going BACK + FORWARD also preserves
+    setStepStates((prev) => ({ ...prev, [step]: captureStepState() }));
+    const prevStep = step - 1;
+    setStep(prevStep);
+    applyStepState(stepStates[prevStep]);
   };
 
   return (
@@ -6586,21 +6891,33 @@ function DynamicLessonScreen({
               >
                 {current.code_before}
               </div>
-              <input
-                type="text"
+              <textarea
                 value={codeInput}
                 onChange={(e) => setCodeInput(e.target.value)}
                 placeholder="Type exact syntax here..."
                 disabled={answered}
+                rows={Math.max(2, codeInput.split("\n").length)}
+                spellCheck={false}
+                autoCapitalize="none"
+                autoCorrect="off"
                 style={{
                   width: "100%",
+                  minWidth: 0,
                   padding: "10px",
                   background: "rgba(0,0,0,0.5)",
                   border: `1px solid ${theme.accent}`,
                   color: theme.accent,
                   fontFamily: "monospace",
+                  fontSize: 14,
+                  lineHeight: 1.5,
                   outline: "none",
                   borderRadius: 4,
+                  resize: "vertical",
+                  minHeight: 44,
+                  maxHeight: 200,
+                  whiteSpace: "pre",
+                  overflowWrap: "normal",
+                  overflowX: "auto",
                 }}
               />
               <div
@@ -6854,7 +7171,7 @@ function DynamicLessonScreen({
       >
         {step > 0 && !errorMsg && (
           <button
-            onClick={() => setStep((s) => s - 1)}
+            onClick={handleBack}
             style={{
               padding: "14px 20px",
               background: "transparent",
@@ -7047,6 +7364,9 @@ export default function App() {
   const [showThreadRegen, setShowThreadRegen] = useState(false);
   const [showRankProgression, setShowRankProgression] = useState(false);
   const [showAchievements, setShowAchievements] = useState(false);
+  // Ad interstitial state: shows after every 3rd lesson for non-supporters
+  const [showAdInterstitial, setShowAdInterstitial] = useState(false);
+  const [adLessonCounter, setAdLessonCounter] = useState(0);
   const [showAuth, setShowAuth] = useState(false);
 
   const activeTheme =
@@ -7229,35 +7549,19 @@ export default function App() {
       );
 
       if (data) {
-        // --- DUOLINGO-STYLE STREAK MATH (PUNISHMENT ONLY) ---
+        // --- LOCAL STATE HYDRATION (NO STREAK MATH HERE) ---
+        // The streak/burner-shield/last_active_date logic ALL lives in the
+        // award_lesson_completion RPC now. Running it client-side caused
+        // a timezone-drift bug: local dates near midnight disagreed with
+        // the SQL function's UTC-based dates, leading to the streak briefly
+        // appearing reset until the next refresh. Trust the DB.
         const today = new Date();
-        const todayStr = today.toLocaleDateString("en-CA");
-        const lastDateStr = data.last_active_date || "";
 
         let updates = {};
-        let currentStreak = data.persistence_streak || 0;
-        let currentBurners = data.burner_phones || 0;
+        const currentStreak = data.persistence_streak || 0;
+        const currentBurners = data.burner_phones || 0;
 
-        if (lastDateStr && lastDateStr !== todayStr) {
-          const yesterday = new Date();
-          yesterday.setDate(yesterday.getDate() - 1);
-          const yesterdayStr = yesterday.toLocaleDateString("en-CA");
-
-          if (lastDateStr !== yesterdayStr) {
-            // They missed yesterday.
-            if (currentBurners > 0) {
-              currentBurners -= 1;
-              updates.burner_phones = currentBurners;
-              // The burner saves the streak integer, but we don't update last_active_date
-              // until they actually do a lesson today to prove they are back.
-            } else {
-              currentStreak = 0; // Streak broken.
-              updates.persistence_streak = 0;
-            }
-          }
-        }
-
-        // Thread recharge (1 per 3 hours up to 22)
+        // Thread recharge (1 per 3 hours up to 22) — purely additive, no RLS issues
         let currentThreads = data.threads ?? 22;
         const lastActiveTime = data.last_active
           ? new Date(data.last_active)
@@ -7300,6 +7604,7 @@ export default function App() {
           referral_count: data.referral_count || 0,
           unlocked_achievements: data.unlocked_achievements || [],
           onboarding_completed: data.onboarding_completed || false,
+          streak_broken_dates: data.streak_broken_dates || [],
         });
 
         // Persist all computed updates to Supabase
@@ -7491,6 +7796,16 @@ export default function App() {
     playSound("lesson_complete");
     checkAchievements(updatedState);
 
+    // Trigger ad interstitial every 3rd lesson for non-supporters
+    if (!userState?.is_supporter) {
+      const newCount = adLessonCounter + 1;
+      setAdLessonCounter(newCount);
+      if (newCount % 3 === 0) {
+        // Delay slightly so the completion overlay shows first
+        setTimeout(() => setShowAdInterstitial(true), 1500);
+      }
+    }
+
     setActiveLesson(null);
     setCompletedLessonData({
       ...lessonMeta,
@@ -7508,51 +7823,99 @@ export default function App() {
     const currentHashes = userState.hashes || 0;
     if (currentHashes < cost) return;
 
-    let updates = { hashes: currentHashes - cost };
-    let newState = { ...userState, hashes: currentHashes - cost };
+    // Client-side cap guards — server enforces these too, this is just for snappy UI
+    let secondaryField = null;
+    let secondaryValue = null;
 
     if (itemType === "burner") {
       const currentBurners = userState.burner_phones || 0;
-      if (currentBurners >= 3) return; // Hard cap at 3
-      updates.burner_phones = currentBurners + 1;
-      newState.burner_phones = currentBurners + 1;
+      if (currentBurners >= 3) return;
+      secondaryField = "burner_phones";
+      secondaryValue = currentBurners + 1;
     } else if (itemType === "threads") {
       const currentThreads = userState.threads || 0;
       if (currentThreads >= 22) return;
-      const newThreads = Math.min(22, currentThreads + 5);
-      updates.threads = newThreads;
-      newState.threads = newThreads;
+      secondaryField = "threads";
+      secondaryValue = Math.min(22, currentThreads + 5);
     } else if (itemType === "overclock") {
       const currentOverclocks = userState.overclock_tokens || 0;
-      if (currentOverclocks >= 6) return; // HARD CAP AT 6
-      updates.overclock_tokens = currentOverclocks + 1;
-      newState.overclock_tokens = currentOverclocks + 1;
+      if (currentOverclocks >= 6) return;
+      secondaryField = "overclock_tokens";
+      secondaryValue = currentOverclocks + 1;
     } else if (itemType === "streak_restore") {
       const currentRestores = userState.streak_restores || 0;
       if (currentRestores >= 3) return;
-      updates.streak_restores = currentRestores + 1;
-      newState.streak_restores = currentRestores + 1;
+      secondaryField = "streak_restores";
+      secondaryValue = currentRestores + 1;
     } else if (itemType === "activate_streak_restore") {
+      // Free action — uses a stored restore, not a hash purchase
       const currentRestores = userState.streak_restores || 0;
       if (currentRestores <= 0 || userState.persistence_streak > 0) return;
-      updates.persistence_streak = 1; // Restore to 1
-      updates.streak_restores = currentRestores - 1;
-      newState.persistence_streak = 1;
-      newState.streak_restores = currentRestores - 1;
+      try {
+        const { data, error } = await supabase.rpc("activate_streak_restore");
+        if (error) throw error;
+        setUserState({
+          ...userState,
+          persistence_streak: data.persistence_streak,
+          streak_restores: data.streak_restores,
+        });
+      } catch (e) {
+        console.error("activate_streak_restore failed:", e);
+        setThreadWarning("⚠ ACTIVATION FAILED");
+        setTimeout(() => setThreadWarning(""), 3000);
+      }
+      return;
     } else if (itemType.startsWith("theme_")) {
       const themeId = itemType.replace("theme_", "");
-      const safeUnlockedList = Array.isArray(userState.unlocked_themes)
-        ? userState.unlocked_themes
-        : ["default"];
-      const newThemes = [...safeUnlockedList, themeId];
-      updates.unlocked_themes = newThemes;
-      updates.active_theme = themeId;
-      newState.unlocked_themes = newThemes;
-      newState.active_theme = themeId;
+      secondaryField = "theme_id";
+      secondaryValue = themeId;
+    } else {
+      return;
     }
 
-    setUserState(newState);
-    await updateProfile(updates);
+    // Route everything else through the make_purchase RPC. The RPC handles
+    // hash deduction + the secondary field update atomically, bypassing the
+    // anti-cheat RLS policy that blocks direct hash writes.
+    try {
+      const { data, error } = await supabase.rpc("make_purchase", {
+        item_type: itemType,
+        cost: cost,
+        secondary_field: secondaryField,
+        // ALWAYS send as a string — the SQL function signature declares
+        // secondary_value as `text` and casts internally. Sending a JS
+        // number gets serialized as a JSON number which Postgres can't
+        // match against the (text, int, text, text) function signature.
+        secondary_value: String(secondaryValue),
+      });
+      if (error) throw error;
+
+      // Trust the server's response — it returns the fresh row
+      const newState = {
+        ...userState,
+        hashes: data.hashes,
+      };
+      if (data.burner_phones !== undefined && data.burner_phones !== null)
+        newState.burner_phones = data.burner_phones;
+      if (data.threads !== undefined && data.threads !== null)
+        newState.threads = data.threads;
+      if (data.overclock_tokens !== undefined && data.overclock_tokens !== null)
+        newState.overclock_tokens = data.overclock_tokens;
+      if (data.streak_restores !== undefined && data.streak_restores !== null)
+        newState.streak_restores = data.streak_restores;
+      if (data.unlocked_themes) newState.unlocked_themes = data.unlocked_themes;
+      if (data.active_theme) newState.active_theme = data.active_theme;
+      setUserState(newState);
+    } catch (e) {
+      console.error("make_purchase failed:", e);
+      const errMsg = e.message || e.error_description || "PURCHASE FAILED";
+      // Surface the real reason so we can debug instead of swallowing it
+      setThreadWarning(
+        errMsg.toLowerCase().includes("insufficient")
+          ? "⚠ NOT ENOUGH HASHES"
+          : `⚠ ${errMsg.substring(0, 80)}`,
+      );
+      setTimeout(() => setThreadWarning(""), 5000);
+    }
   };
 
   const handleActivateOverclock = async () => {
@@ -7925,6 +8288,19 @@ export default function App() {
                 theme={activeTheme}
                 onClose={() => setShowDailyReward(false)}
                 onClaim={handleClaimDailyReward}
+              />
+            )}
+
+            {/* AD BANNER — only mounts for non-supporters */}
+            {/* AD INTERSTITIAL — pops up after every 3rd lesson for non-supporters */}
+            {!userState?.is_supporter && showAdInterstitial && (
+              <AdInterstitial
+                theme={activeTheme}
+                onDismiss={() => setShowAdInterstitial(false)}
+                onUpgrade={() => {
+                  setShowAdInterstitial(false);
+                  setScreen("market");
+                }}
               />
             )}
 

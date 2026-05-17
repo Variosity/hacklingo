@@ -1,0 +1,342 @@
+{
+  "mod_prog_3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Functions Are Reusable Logic",
+        "body": "A function is a named block of code that takes inputs, does something, and optionally returns an output. Without functions, every program is a single wall of sequential statements — unreadable, untestable, and impossible to reuse. Functions are how you build anything larger than a script.\n\nIn security tooling, functions map directly to operations: scan_port(), parse_header(), send_payload(). Each one does exactly one thing and is testable in isolation. When your exploit fails, you can call parse_header() directly on a captured packet and see exactly where parsing breaks — because the logic is isolated.\n\nPython functions are first-class objects. You can store them in a list, pass them as arguments, and return them from other functions. This is what made the TTP registry in the ATT&CK engine work — the map from technique IDs to functions. Understanding functions as objects unlocks every dispatcher, plugin system, and callback pattern you'll ever write."
+      },
+      {
+        "type": "concept",
+        "heading": "Scope: Where Names Live",
+        "body": "Scope is the region of code where a variable name is visible. Python uses the LEGB rule: Local → Enclosing → Global → Built-in. When Python encounters a name, it searches those four scopes in order and uses the first match it finds.\n\nLocal scope is inside the current function. Global scope is the module level. Enclosing scope is the outer function when you have a function defined inside another function (a closure). Built-in scope is Python's own names — len, print, type, etc.\n\nThe critical gotcha: assignment inside a function always creates a local variable unless you explicitly declare global x or nonlocal x. If you read a global variable inside a function without assigning to it, Python finds it in global scope. The moment you assign to it, Python treats the entire function's use of that name as local — including reads before the assignment. This causes an UnboundLocalError that looks like the variable doesn't exist. Miss this and you'll waste an hour on a bug that's two characters wide."
+      },
+      {
+        "type": "code",
+        "heading": "Function Definition and Scope in Python",
+        "body": "This snippet covers function definition, default arguments, *args/**kwargs, return values, and the global/local scope distinction — the full picture in one annotated example.",
+        "code": "# Function fundamentals with security-tool context\n\n# Basic function: takes a host and port, returns a formatted target string\ndef format_target(host: str, port: int = 80) -> str:   # Type hints + default arg\n    return f\"{host}:{port}\"                            # f-string formatting\n\nprint(format_target(\"10.0.0.1\"))         # \"10.0.0.1:80\"  — uses default\nprint(format_target(\"10.0.0.1\", 443))   # \"10.0.0.1:443\" — overrides default\n\n# *args: accept any number of positional arguments as a tuple\ndef dump_bytes(*args: int) -> str:\n    return \" \".join(hex(b) for b in args)  # Join hex strings\n\nprint(dump_bytes(0x41, 0x42, 0x90))     # \"0x41 0x42 0x90\"\n\n# **kwargs: accept any number of keyword arguments as a dict\ndef build_header(**fields) -> bytes:\n    parts = [f\"{k}={v}\" for k, v in fields.items()]\n    return \";\".join(parts).encode()        # Encode to bytes for transmission\n\nprint(build_header(cmd=\"whoami\", id=\"001\"))  # b'cmd=whoami;id=001'\n\n# Scope demonstration — global vs local\nresults = []                             # Global list\n\ndef add_result(item: str) -> None:\n    results.append(item)                 # Mutating a global — OK, no 'global' needed\n    # results = [] would create a LOCAL 'results' and shadow the global\n\nadd_result(\"192.168.1.1 open\")\nprint(results)                           # ['192.168.1.1 open']"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define a Function with Default Arg",
+        "context": "Define a function named \"scan_target\" that accepts a parameter \"host\" of type str and a parameter \"port\" of type int with a default value of 443. Include the type hints. Type exactly: \"def scan_target(host: str, port: int = 443):\".",
+        "code_before": "# Port scanner stub\n",
+        "code_after": "\n    return f\"scanning {host}:{port}\"",
+        "correct_answer": "def scan_target(host: str, port: int = 443):"
+      },
+      {
+        "type": "code",
+        "heading": "Closures and Functions as Objects",
+        "body": "Here's the function-as-object pattern in action: a factory function that returns a configured scanner function, and a dispatcher that maps names to functions and calls them by lookup — the same architecture as the ATT&CK registry.",
+        "code": "# Functions as first-class objects — closure and registry patterns\n\n# Closure: outer function returns a configured inner function\ndef make_encoder(key: int):\n    \"\"\"Returns an XOR encoder pre-configured with a specific key.\"\"\"\n    def encode(data: bytes) -> bytes:\n        return bytes(b ^ key for b in data)  # XOR each byte with the captured key\n    return encode                             # Return the function itself, not its result\n\nxor_41 = make_encoder(0x41)          # Create an encoder with key=0x41\nxor_ff = make_encoder(0xFF)          # Different key, different encoder\n\npayload = b\"\\x01\\x02\\x03\"\nprint(xor_41(payload).hex())         # Each byte XORed with 0x41\nprint(xor_ff(payload).hex())         # Each byte XORed with 0xFF\n\n# Registry pattern: map string names to functions\ndef recon_hosts(target): return f\"recon: {target}\"\ndef exploit_host(target): return f\"exploit: {target}\"\ndef exfil_data(target):  return f\"exfil: {target}\"\n\nPLAYBOOK = {\n    \"recon\":   recon_hosts,   # Value is the function object, not a call\n    \"exploit\": exploit_host,\n    \"exfil\":   exfil_data,\n}\n\ndef run_playbook(steps: list, target: str):\n    for step in steps:\n        fn = PLAYBOOK.get(step)          # Look up the function\n        if fn is None:\n            print(f\"[-] Unknown step: {step}\")\n            continue\n        print(fn(target))                # Call it with the target\n\nrun_playbook([\"recon\", \"exploit\", \"exfil\"], \"10.0.0.1\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Call a Function from a Registry",
+        "context": "Given a dict named \"PLAYBOOK\" mapping step names to functions, look up the key \"recon\" using the \".get()\" method and assign the result to a variable named \"fn\". Type exactly: \"fn = PLAYBOOK.get('recon')\".",
+        "code_before": "PLAYBOOK = {\"recon\": lambda t: f\"recon {t}\"}\ntarget = \"10.0.0.1\"\n",
+        "code_after": "\nif fn:\n    print(fn(target))",
+        "correct_answer": "fn = PLAYBOOK.get('recon')"
+      },
+      {
+        "type": "concept",
+        "heading": "Mutable Defaults & Return Gotchas",
+        "body": "Mutable default arguments are Python's most infamous footgun. def f(buf=[]): — the list is created once when the function is defined, not each time it's called. Every invocation that doesn't pass buf shares the same list object. In an exploit tool that builds payloads across multiple calls, this silently contaminates every payload with data from all previous calls. Fix: def f(buf=None): then buf = buf if buf is not None else [].\n\nFunctions that don't explicitly return a value return None. If you call result = my_function() and then use result without checking, and my_function forgot a return statement, you'll get an AttributeError on None that points to the wrong line. Always check return values from functions that can fail.\n\nPure functions — functions with no side effects that always return the same output for the same input — are your best friends when writing security tools. They're trivially testable. Encode, decode, parse, format operations should all be pure. Functions that send packets, write files, or modify global state should be clearly separated and minimal. This is not academic software engineering — it's how you write tools that don't accidentally exfil data during a test run because a side-effectful parser triggered a network call."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Fix the Mutable Default Argument",
+        "context": "Define a function named \"build_payload\" with a parameter \"chunks\" that defaults to None instead of a mutable list. Inside the function, the first line should assign chunks to an empty list if it is None, using \"chunks = chunks if chunks is not None else []\". Type the function signature exactly: \"def build_payload(chunks=None):\".",
+        "code_before": "# Correct pattern: avoid mutable default argument\n",
+        "code_after": "\n    chunks = chunks if chunks is not None else []\n    return chunks",
+        "correct_answer": "def build_payload(chunks=None):"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You write the following Python function:\n\n    count = 0\n    def increment():\n        count += 1\n        return count\n    increment()\n\nRunning this raises an UnboundLocalError on the count += 1 line, even though count is defined globally. What is the correct explanation?\n\nA) count is an integer and integers are immutable — you can't increment them\nB) The += assignment makes Python treat count as local to the function, but it has no local value yet\nC) You need to import count before using it inside a function\nD) count += 1 is invalid syntax inside a function body",
+        "options": [
+          "Integers are immutable — you cannot increment a global integer",
+          "The += assignment makes Python treat count as local, but it has no local value yet",
+          "You must import count before using it inside a function",
+          "count += 1 is invalid syntax inside a function body"
+        ],
+        "correct": 1,
+        "hint": "Recall the LEGB rule and what Python decides about a variable's scope the moment it sees an assignment anywhere in a function body."
+      }
+    ]
+  },
+  "mod_prog_4": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Arrays vs Hash Maps",
+        "body": "Two data structures dominate security tooling: arrays (lists in Python) and hash maps (dicts in Python). Arrays are ordered sequences — every element sits at a numbered index. Hash maps are key-value stores — every value is retrieved by a key, not a position. Choosing the wrong one for a task is the difference between O(1) lookup and O(n) lookup, and at scale that gap turns a fast tool into an unusable one.\n\nArrays are the right choice when order matters, when you need to iterate everything, or when you're working with raw binary data (bytes and bytearray are fixed-size arrays under the hood). Hash maps are the right choice when you need fast lookup by name or identifier — port-to-service mappings, hostname-to-IP caches, technique-ID-to-function registries.\n\nIn security tools, the performance difference is real. Checking if a port is in a set of 65535 scanned ports: O(1) with a set (hash-backed), O(n) with a list. When you're correlating 100,000 log events against 10,000 known IOCs, that O(1) vs O(n) determines whether your tool finishes in seconds or hours."
+      },
+      {
+        "type": "concept",
+        "heading": "How Hashing and Indexing Work",
+        "body": "A list in Python stores references to objects at contiguous memory indices. Access by index (my_list[42]) is O(1) — the interpreter computes the memory address directly from the index. Search by value (42 in my_list) is O(n) — Python scans every element until it finds a match or exhausts the list.\n\nA dict in Python is a hash table. When you set d[key] = value, Python calls hash(key) to compute an integer, uses that integer to find a bucket in the internal array, and stores the value there. Retrieval does the same: hash(key) → find bucket → return value. This is O(1) average case. Collisions (two keys hash to the same bucket) are handled internally and are rare with Python's hash implementation.\n\nA set is a dict without values — just a hash table of keys. Membership testing (x in my_set) is O(1). This is the correct data structure for IOC lookups, seen-host deduplication, and any operation where you need 'have I seen this before' in a hot loop. Using a list for this is a performance bug."
+      },
+      {
+        "type": "code",
+        "heading": "Lists and Dicts in Security Tools",
+        "body": "This snippet shows the canonical uses of both data structures in a security context — including the performance-critical pattern of converting a list to a set before doing repeated membership checks.",
+        "code": "# Arrays (lists) and hash maps (dicts/sets) — security tool patterns\n\n# List: ordered, indexed, allows duplicates\nopen_ports = []                          # Collect results in scan order\nfor port in [22, 80, 443, 8080, 22]:    # 22 appears twice\n    open_ports.append(port)\nprint(open_ports)                        # [22, 80, 443, 8080, 22] — order preserved, dupes kept\n\n# Set: unordered, no duplicates, O(1) membership\nunique_ports = set(open_ports)           # Deduplicate instantly\nprint(unique_ports)                      # {8080, 443, 80, 22} — order not guaranteed\nprint(443 in unique_ports)               # True — O(1) lookup\n\n# Dict: key-value, O(1) lookup by key — port-to-service mapping\nSERVICES = {\n    22:   \"SSH\",\n    80:   \"HTTP\",\n    443:  \"HTTPS\",\n    3389: \"RDP\",\n    5985: \"WinRM\",\n}\n\nfor port in open_ports:\n    service = SERVICES.get(port, \"UNKNOWN\")  # .get() with default — no KeyError\n    print(f\"  {port}/tcp  {service}\")\n\n# IOC lookup — WRONG way (O(n) per check)\niocs_list = [\"evil.com\", \"bad.ru\", \"malware.io\"]\ndef check_ioc_slow(domain): return domain in iocs_list   # Scans entire list each time\n\n# IOC lookup — RIGHT way (O(1) per check)\niocs_set = set(iocs_list)                                # Convert once\ndef check_ioc_fast(domain): return domain in iocs_set    # Hash lookup\n\nprint(check_ioc_fast(\"evil.com\"))   # True\nprint(check_ioc_fast(\"good.com\"))   # False"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Convert List to Set for O(1) Lookup",
+        "context": "Given a list named \"ioc_list\" containing known malicious domains, convert it to a set and assign the result to a variable named \"ioc_set\". Use the built-in \"set()\" constructor. Type exactly: \"ioc_set = set(ioc_list)\".",
+        "code_before": "ioc_list = [\"evil.com\", \"bad.ru\", \"malware.io\"]\n",
+        "code_after": "\nprint(\"evil.com\" in ioc_set)  # True — O(1)",
+        "correct_answer": "ioc_set = set(ioc_list)"
+      },
+      {
+        "type": "code",
+        "heading": "Advanced Dict Patterns for Log Correlation",
+        "body": "Dicts with default values, dict comprehensions, and nested dicts are the core of log correlation and event aggregation tools. Here's the full pattern for counting, grouping, and correlating security events.",
+        "code": "from collections import defaultdict\n\n# Simulated log entries: (source_ip, event_type)\nlogs = [\n    (\"10.0.0.5\",  \"auth_fail\"),\n    (\"10.0.0.5\",  \"auth_fail\"),\n    (\"10.0.0.5\",  \"auth_success\"),\n    (\"10.0.0.9\",  \"auth_fail\"),\n    (\"192.168.1.1\", \"port_scan\"),\n]\n\n# defaultdict(int): automatically initialises missing keys to 0\nfail_counts = defaultdict(int)           # No KeyError on first access\nfor ip, event in logs:\n    if event == \"auth_fail\":\n        fail_counts[ip] += 1             # Increment without checking existence\n\nprint(dict(fail_counts))                 # {'10.0.0.5': 2, '10.0.0.9': 1}\n\n# Flag IPs with >1 auth failure as potential brute-force\nBRUTEFORCE_THRESHOLD = 2\nsuspects = {ip for ip, count in fail_counts.items() if count >= BRUTE_FORCE_THRESHOLD}\nprint(suspects)                          # {'10.0.0.5'}\n\n# Dict comprehension: invert a mapping (value -> key)\nSERVICES = {22: \"SSH\", 80: \"HTTP\", 443: \"HTTPS\"}\nPORTS_BY_SERVICE = {v: k for k, v in SERVICES.items()}  # Flip keys and values\nprint(PORTS_BY_SERVICE[\"SSH\"])           # 22\n\n# Nested dict: group events by IP then by type\nevent_map = defaultdict(lambda: defaultdict(int))\nfor ip, event in logs:\n    event_map[ip][event] += 1\nprint(dict(event_map[\"10.0.0.5\"]))      # {'auth_fail': 2, 'auth_success': 1}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Build a Dict Comprehension",
+        "context": "Given a dict named \"SERVICES\" mapping port integers to service name strings, create an inverted dict named \"PORTS_BY_SERVICE\" that maps service names to port numbers using a dict comprehension. Type exactly: \"PORTS_BY_SERVICE = {v: k for k, v in SERVICES.items()}\".",
+        "code_before": "SERVICES = {22: \"SSH\", 80: \"HTTP\", 443: \"HTTPS\"}\n",
+        "code_after": "\nprint(PORTS_BY_SERVICE[\"SSH\"])  # 22",
+        "correct_answer": "PORTS_BY_SERVICE = {v: k for k, v in SERVICES.items()}"
+      },
+      {
+        "type": "concept",
+        "heading": "Complexity, Collisions & Gotchas",
+        "body": "Dict keys must be hashable — immutable types only. Strings, integers, tuples of immutables: valid keys. Lists, dicts, sets: not hashable, cannot be keys. If you try to use a list as a key you get a TypeError immediately. The fix is usually to convert to a tuple: tuple(my_list) as the key.\n\nHash collisions are rare in Python but not impossible when working with adversarial input. If an attacker can control the keys being inserted into a dict (e.g. HTTP header names in a web server), they can craft keys that all collide, degrading dict operations to O(n). Python 3.3+ uses hash randomization by default (PYTHONHASHSEED) to mitigate this. Don't disable it.\n\nOrdering: Python dicts are insertion-ordered since Python 3.7. This is a language guarantee, not an implementation detail. If your code relied on dict ordering being undefined, audit it — but for new tooling, you can safely rely on insertion order. This matters for protocol implementations where field order in a dict maps to wire format order.\n\nFor large-scale IOC matching (millions of entries), consider using a Bloom filter or database-backed lookup instead of a Python set. A set of 10 million strings will consume several hundred MB of RAM. A Bloom filter gives probabilistic O(1) membership with a fraction of the memory, at the cost of a configurable false-positive rate."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Use defaultdict for Event Counting",
+        "context": "Import defaultdict from the collections module and create a variable named \"counts\" that is a defaultdict initialized with \"int\" as the default factory. Type exactly: \"counts = defaultdict(int)\".",
+        "code_before": "from collections import defaultdict\n# Count occurrences of each event type\n",
+        "code_after": "\ncounts[\"auth_fail\"] += 1\nprint(counts[\"auth_fail\"])  # 1",
+        "correct_answer": "counts = defaultdict(int)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You're building a log correlator that checks each incoming event's source IP against a known-bad IP list with 50,000 entries. The tool processes 1 million events per run. You currently store the bad IPs in a Python list. A colleague suggests switching to a set. Which statement best describes the impact?\n\nA) Negligible — Python optimizes list search for large lists automatically\nB) The set reduces memory usage but does not change lookup speed\nC) The set reduces each lookup from O(n) to O(1), cutting total check time from ~50 billion operations to ~1 million\nD) Sets are unordered so IP addresses cannot be stored in them reliably",
+        "options": [
+          "Negligible — Python optimizes list search for large lists automatically",
+          "The set reduces memory but does not change lookup speed",
+          "The set reduces each lookup from O(n) to O(1), cutting total checks from ~50B to ~1M operations",
+          "Sets are unordered so IPs cannot be stored reliably"
+        ],
+        "correct": 2,
+        "hint": "Work out the total number of comparison operations for each structure: 1M events × average list scan depth vs 1M events × hash lookup cost."
+      }
+    ]
+  },
+  "mod_prog_5": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Libraries Extend Your Reach",
+        "body": "No security tool is built from scratch. The Python standard library gives you sockets, subprocess execution, file I/O, cryptography primitives, and JSON parsing. Third-party libraries on PyPI give you HTTP clients, packet crafting (Scapy), SSH (Paramiko), database drivers, and thousands of other capabilities. Knowing what exists and how to integrate it is more valuable than reimplementing it.\n\nA library is just Python code someone else wrote, packaged so you can import it. When you write import requests, Python finds the requests package on your sys.path, loads its __init__.py, and makes its functions available under the requests namespace. That's it. No magic.\n\nAPIs — Application Programming Interfaces — are the contracts that libraries expose. A REST API is an HTTP-based contract: send a GET to /api/v1/hosts and receive JSON. A Python library API is a function signature contract: call requests.get(url, headers=headers, timeout=5) and receive a Response object. In both cases, you're agreeing to call something in a specific way and expecting a specific kind of response back."
+      },
+      {
+        "type": "concept",
+        "heading": "Import System & Namespaces",
+        "body": "Python's import system resolves names in this order: sys.modules cache (already-imported modules), built-in modules (compiled into the interpreter), then the directories in sys.path (standard library, then site-packages for third-party, then the current directory).\n\nFour import styles: import os (access as os.path.join), from os import path (access as path.join), from os.path import join (access as join directly), import os as operating_system (alias). For security tooling, prefer the full import os style — it makes it immediately clear where each function comes from when reading code months later. The from x import * style is banned in any serious codebase — it pollutes your namespace with unknown names and makes dependency tracing impossible.\n\nVirtual environments (venv) isolate project dependencies. Without them, every pip install goes into the system Python and eventually you get version conflicts that break tools at the worst possible moment. For any tool you're deploying on an ops box: python3 -m venv .venv, source .venv/bin/activate, then pip install. The tool's dependencies are frozen and isolated from everything else on the system."
+      },
+      {
+        "type": "code",
+        "heading": "requests, json, and subprocess",
+        "body": "Three of the most-used libraries in security Python: requests for HTTP, json for serialization, subprocess for running system commands — all shown with the error-handling patterns that separate production tools from scripts.",
+        "code": "import json\nimport subprocess\nimport requests                          # pip install requests\nfrom requests.exceptions import RequestException, Timeout\n\n# --- requests: HTTP client ---\ndef fetch_json(url: str, api_key: str = None) -> dict | None:\n    headers = {\"Accept\": \"application/json\"}\n    if api_key:\n        headers[\"Authorization\"] = f\"Bearer {api_key}\"  # Auth header\n    try:\n        resp = requests.get(url, headers=headers, timeout=10)  # Always set timeout\n        resp.raise_for_status()            # Raises HTTPError on 4xx/5xx\n        return resp.json()                 # Parse JSON response body\n    except Timeout:\n        print(f\"[-] Request to {url} timed out\")\n    except RequestException as e:\n        print(f\"[-] HTTP error: {e}\")\n    return None\n\n# --- json: serialization ---\ndata = {\"technique\": \"T1082\", \"success\": True, \"output\": \"Linux kali 6.1\"}\nserialised = json.dumps(data, indent=2)  # Dict -> JSON string\nprint(serialised)\nback = json.loads(serialised)            # JSON string -> dict\nprint(back[\"technique\"])                 # \"T1082\"\n\n# --- subprocess: run system commands safely ---\ndef run_cmd(args: list) -> tuple[str, int]:\n    \"\"\"Run a command, return (output, returncode). Never use shell=True with user input.\"\"\"\n    result = subprocess.run(\n        args,                              # List of args — safe, no shell injection\n        capture_output=True,               # Capture stdout and stderr\n        text=True,                         # Decode output as string\n        timeout=30,                        # Kill if it hangs\n    )\n    return result.stdout + result.stderr, result.returncode\n\noutput, code = run_cmd([\"uname\", \"-a\"])\nprint(f\"exit={code}: {output.strip()}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Set a Request Timeout",
+        "context": "Make an HTTP GET request using the \"requests.get\" function to a URL stored in a variable named \"url\". Pass a \"timeout\" keyword argument set to the integer 10. Assign the result to a variable named \"resp\". Type exactly: \"resp = requests.get(url, timeout=10)\".",
+        "code_before": "import requests\nurl = \"https://api.example.com/data\"\n",
+        "code_after": "\nprint(resp.status_code)",
+        "correct_answer": "resp = requests.get(url, timeout=10)"
+      },
+      {
+        "type": "code",
+        "heading": "Working with a REST API",
+        "body": "Here's a complete pattern for querying a REST API, handling pagination, and building a local cache of results — the kind of code you'd write for a threat intel platform integration or an asset management API.",
+        "code": "import json\nimport time\nimport requests\n\nBASE_URL  = \"https://threatintel.example.com/api/v1\"\nAPI_KEY   = \"your-api-key-here\"            # In production: load from env, not hardcode\nHEADERS   = {\"Authorization\": f\"Bearer {API_KEY}\", \"Accept\": \"application/json\"}\n\ndef get_indicators(indicator_type: str, page: int = 1) -> list:\n    \"\"\"Fetch one page of threat indicators from the API.\"\"\"\n    params = {\"type\": indicator_type, \"page\": page, \"per_page\": 100}\n    try:\n        r = requests.get(f\"{BASE_URL}/indicators\",\n                         headers=HEADERS,\n                         params=params,       # Appended as ?type=...&page=... in URL\n                         timeout=15)\n        r.raise_for_status()\n        return r.json().get(\"data\", [])       # Return the data array or empty list\n    except requests.HTTPError as e:\n        print(f\"[-] API returned error: {e.response.status_code}\")\n        return []\n\ndef fetch_all_indicators(indicator_type: str) -> list:\n    \"\"\"Paginate through all results, respecting rate limits.\"\"\"\n    all_results = []\n    page = 1\n    while True:\n        batch = get_indicators(indicator_type, page)\n        if not batch:                         # Empty page = no more results\n            break\n        all_results.extend(batch)\n        page += 1\n        time.sleep(0.5)                       # Rate limit: 2 req/s max\n    return all_results\n\n# Save to disk as a local IOC cache\ndef save_cache(data: list, path: str = \"/tmp/ioc_cache.json\") -> None:\n    with open(path, \"w\") as f:\n        json.dump(data, f, indent=2)          # Pretty-print for human readability\n    print(f\"[+] Saved {len(data)} indicators to {path}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Parse JSON Response Body",
+        "context": "Given a requests Response object stored in a variable named \"r\", call the \".json()\" method on it and use \".get()\" to retrieve the key \"data\" with a default of an empty list. Assign the result to \"results\". Type exactly: \"results = r.json().get('data', [])\".",
+        "code_before": "# r is a requests.Response object from a successful API call\n",
+        "code_after": "\nprint(len(results))",
+        "correct_answer": "results = r.json().get('data', [])"
+      },
+      {
+        "type": "concept",
+        "heading": "Dependency Security & API Keys",
+        "body": "Every library you import is an attack surface. The Python ecosystem has suffered multiple supply chain attacks where malicious packages were published with names similar to popular ones (typosquatting: requets instead of requests). Always verify the package name character by character before installing. Use pip install --require-hashes with a pinned requirements.txt for production tooling — this ensures you get exactly the bytes you expect.\n\nAPI keys are secrets. They do not go in source code. Ever. Not even in a comment. Use environment variables: import os; key = os.environ.get('THREATINTEL_API_KEY'). Use a secrets manager for deployed tooling. If an API key is accidentally committed to git, rotate it immediately — assume it was seen the moment it was pushed, even to a private repo.\n\nVersion pinning: requests==2.31.0 in requirements.txt is a security practice, not just reproducibility hygiene. An unpinned requests in your requirements means the next pip install might pull a compromised version. Pin everything, update deliberately, review changelogs when updating — especially for libraries with network access or file I/O."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Load API Key from Environment",
+        "context": "Load an API key from the environment variable named \"THREATINTEL_KEY\" using the os module. Assign the result to a variable named \"api_key\". Use \"os.environ.get\" with the string argument \"'THREATINTEL_KEY'\". Type exactly: \"api_key = os.environ.get('THREATINTEL_KEY')\".",
+        "code_before": "import os\n# Never hardcode secrets — load from environment\n",
+        "code_after": "\nif not api_key:\n    raise RuntimeError(\"THREATINTEL_KEY not set\")",
+        "correct_answer": "api_key = os.environ.get('THREATINTEL_KEY')"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Your threat intel script runs requests.get(url) with no timeout argument. In production, the API server starts hanging — accepting connections but never sending a response. What happens to your script?\n\nA) requests automatically times out after 30 seconds and raises a Timeout exception\nB) The script blocks indefinitely on that line, hanging the entire process\nC) Python's GIL detects the stall and raises a RuntimeError after 60 seconds\nD) The OS TCP stack sends a RST after the default socket timeout of 75 seconds",
+        "options": [
+          "requests automatically times out after 30 seconds and raises Timeout",
+          "The script blocks indefinitely, hanging the entire process",
+          "Python's GIL detects the stall and raises RuntimeError after 60 seconds",
+          "The OS TCP stack sends RST after the default 75-second socket timeout"
+        ],
+        "correct": 1,
+        "hint": "Check the requests documentation's default timeout value — or lack thereof — and think about what blocking I/O with no timeout means for a single-threaded process."
+      }
+    ]
+  },
+  "mod_prog_6": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Pointers vs References",
+        "body": "A pointer is a variable that stores a memory address — the location of another value. When C code writes int *p = &x, p holds the address of x. Dereferencing p (writing *p) reads the value at that address. This is direct memory manipulation. It's what makes C fast, what makes buffer overflows possible, and what makes memory-safety bugs the dominant vulnerability class for the last 40 years.\n\nPython doesn't have pointers in the C sense. Every Python variable is a reference — a binding from a name to an object. When you write a = [1, 2, 3], a references a list object somewhere in memory. When you write b = a, both a and b reference the same list. This is why b.append(4) also changes what a sees — there is one list, two names for it.\n\nGo sits between the two. Go has explicit pointers (&x to take an address, *p to dereference) but with garbage collection and no pointer arithmetic. Rust has references with compile-time lifetime enforcement. Understanding the model of each language tells you exactly what class of bugs can and cannot exist in code written in it."
+      },
+      {
+        "type": "concept",
+        "heading": "Memory Addresses and Mutation",
+        "body": "In Python, id(x) returns the memory address of the object x references. Mutable objects (lists, dicts, bytearrays) can be changed in-place — all references to that object see the change. Immutable objects (integers, strings, tuples, bytes) cannot be changed — operations that appear to modify them actually create new objects.\n\nThis has direct security implications. If you pass a bytearray payload to a function and the function modifies it, the caller's payload is also modified — they share the same object. If you pass a bytes payload, the function cannot modify it; any 'modification' produces a new bytes object. Knowing this determines whether you need to defensive-copy data before passing it somewhere.\n\nIn C, a pointer bug causes a buffer overflow when a write goes past the end of an allocated buffer. Python protects you from this — list and bytearray bounds are checked at runtime. But the same conceptual mistake — assuming you have exclusive ownership of a mutable object when you don't — produces subtle data corruption bugs in Python that are just as hard to diagnose."
+      },
+      {
+        "type": "code",
+        "heading": "References, Mutation and Copies in Python",
+        "body": "This snippet demonstrates Python's reference semantics, the difference between shallow and deep copies, and the id() function for inspecting object identity — the Python-level tools for reasoning about memory.",
+        "code": "import copy\n\n# Reference semantics: a and b point to the same list object\na = [1, 2, 3]\nb = a                        # b is NOT a copy — it's another name for the same list\nb.append(4)\nprint(a)                     # [1, 2, 3, 4] — a also changed\nprint(id(a) == id(b))        # True — same object in memory\n\n# Shallow copy: new list object, but nested objects are still shared\nc = a.copy()                 # OR: c = a[:] OR: c = list(a)\nc.append(99)\nprint(a)                     # [1, 2, 3, 4] — a unchanged\nprint(a is c)                # False — different objects now\n\n# Shallow copy gotcha: nested mutables ARE still shared\nnested = [[1, 2], [3, 4]]\nshallow = nested.copy()\nshallow[0].append(99)        # Modifying the inner list\nprint(nested[0])             # [1, 2, 99] — ALSO changed — shared inner reference\n\n# Deep copy: fully independent clone, including all nested objects\ndeep = copy.deepcopy(nested)\ndeep[0].append(0)\nprint(nested[0])             # [1, 2, 99] — unchanged — truly independent\n\n# Immutable bytes: functions cannot modify them\ndef zero_first_byte(data: bytes) -> bytes:\n    return b\"\\x00\" + data[1:]   # Returns a NEW bytes object, original untouched\n\npayload = b\"\\x41\\x42\\x43\"\nnew_payload = zero_first_byte(payload)\nprint(payload)               # b'ABC' — original unchanged\nprint(new_payload)           # b'\\x00BC'"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Make a Deep Copy",
+        "context": "Given a nested list named \"original\" containing inner lists, create a fully independent copy using \"copy.deepcopy\" and assign the result to a variable named \"clone\". Type exactly: \"clone = copy.deepcopy(original)\".",
+        "code_before": "import copy\noriginal = [[1, 2], [3, 4]]\n",
+        "code_after": "\nclone[0].append(99)\nprint(original[0])  # [1, 2] — unchanged",
+        "correct_answer": "clone = copy.deepcopy(original)"
+      },
+      {
+        "type": "code",
+        "heading": "Go Pointers: Addresses and Dereferencing",
+        "body": "Here's the Go equivalent — explicit pointers, address-of and dereference operators, and how passing a pointer to a function allows the function to modify the caller's value.",
+        "code": "package main\n\nimport \"fmt\"\n\n// modifyValue takes a plain int — Go passes by value, so this is a copy\nfunc modifyValue(x int) {\n\tx = 99                         // Only modifies the local copy\n}\n\n// modifyPointer takes a pointer to int — can modify the original\nfunc modifyPointer(p *int) {\n\t*p = 99                        // Dereference p and write to the address it holds\n}\n\n// buildPayload demonstrates a pointer receiver on a struct\ntype Payload struct {\n\tData []byte\n\tSize int\n}\n\n// Pointer receiver: modifications affect the original Payload\nfunc (p *Payload) AppendByte(b byte) {\n\tp.Data = append(p.Data, b)     // append may reallocate; pointer receiver ensures caller sees new slice\n\tp.Size = len(p.Data)\n}\n\nfunc main() {\n\tx := 42\n\tmodifyValue(x)\n\tfmt.Println(x)                 // 42 — unchanged\n\n\tmodifyPointer(&x)              // & takes the address of x\n\tfmt.Println(x)                 // 99 — changed via pointer\n\n\taddr := &x                    // addr is of type *int\n\tfmt.Printf(\"address: %p, value: %d\\n\", addr, *addr)  // %p prints address, *addr dereferences\n\n\tpayload := Payload{Data: []byte{}}\n\tpayload.AppendByte(0x41)       // Pointer receiver called on value — Go handles automatically\n\tpayload.AppendByte(0x42)\n\tfmt.Println(payload.Data)      // [65 66] — 0x41 0x42\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Take the Address of a Variable",
+        "context": "In Go, declare a variable named \"port\" with value 8080 using short variable declaration, then declare a pointer variable named \"ptr\" that holds the address of \"port\" using the address-of operator \"&\". Type exactly: \"ptr := &port\".",
+        "code_before": "port := 8080\n",
+        "code_after": "\nfmt.Printf(\"address: %p\\n\", ptr)",
+        "correct_answer": "ptr := &port"
+      },
+      {
+        "type": "concept",
+        "heading": "Aliasing, Ownership & Security Bugs",
+        "body": "Aliasing is when two names refer to the same underlying memory. It's the root cause of a broad class of bugs: use-after-free (C: you free memory that a pointer still references, then that pointer is dereferenced), dangling pointers (C: pointer to stack memory that's been reclaimed), and double-free (C: freeing the same address twice, corrupting the allocator's metadata).\n\nPython's garbage collector prevents use-after-free and dangling pointers — an object is not freed while any reference to it exists. But aliasing bugs in Python manifest as unintended data sharing: you pass a list to a function expecting it not to be modified, the function modifies it, and your data is corrupted. The fix is explicit copying at the call site or contract documentation (this function does not modify its arguments).\n\nRust eliminates aliasing bugs at compile time through its ownership and borrowing system: at any point, a value has exactly one owner, and you can have either one mutable reference OR any number of immutable references, never both. This makes an entire class of vulnerabilities impossible by construction. It's why Rust is increasingly used for security-critical components — not for performance, but for the memory safety guarantee."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Demonstrate Python Aliasing",
+        "context": "Assign a list named \"original\" containing [1, 2, 3] to a new variable named \"alias\" without copying it, to create an alias. Use a plain assignment statement. Type exactly: \"alias = original\".",
+        "code_before": "original = [1, 2, 3]\n",
+        "code_after": "\nalias.append(4)\nprint(original)  # [1, 2, 3, 4] — same object",
+        "correct_answer": "alias = original"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "In Python, you write:\n\n    def sanitize(payload: list) -> None:\n        for i in range(len(payload)):\n            payload[i] = 0\n\n    data = [0x41, 0x42, 0x43]\n    sanitize(data)\n    print(data)\n\nWhat does print(data) output, and why?\n\nA) [0x41, 0x42, 0x43] — the function received a copy, so the original is unchanged\nB) [0, 0, 0] — the function received a reference to the same list and modified it in-place\nC) [] — assigning to indices removes elements from a list\nD) A TypeError — you cannot assign to list indices inside a function",
+        "options": [
+          "[0x41, 0x42, 0x43] — the function got a copy, original is unchanged",
+          "[0, 0, 0] — the function received a reference and modified the list in-place",
+          "[] — assigning to indices removes elements",
+          "TypeError — cannot assign to list indices inside a function"
+        ],
+        "correct": 1,
+        "hint": "Recall Python's reference semantics for mutable objects — trace whether the function receives a new list or a reference to the original."
+      }
+    ]
+  },
+  "mod_purp_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "ATT&CK Is Your Playbook",
+        "body": "MITRE ATT&CK is a publicly maintained knowledge base of adversary tactics, techniques, and procedures (TTPs) observed in real-world intrusions. Every entry is sourced from actual threat actor behavior — not theoretical attacks. It's organized by Tactics (the why: what goal is the attacker pursuing?) and Techniques (the how: what action do they take to achieve it?).\n\nFor a purple team operator, ATT&CK is the shared language between red and blue. Red runs T1059.001 (PowerShell execution). Blue checks whether their SIEM fired a corresponding alert. The framework makes this comparison structured and repeatable — instead of 'did the attack work', the question becomes 'which specific technique succeeded and which detection fired or failed to fire'.\n\nAutomating ATT&CK means building tooling that: pulls technique metadata from the MITRE data source, maps techniques to simulation functions, executes them, and compares execution telemetry against expected detection outcomes. This module builds that pipeline in Python."
+      },
+      {
+        "type": "concept",
+        "heading": "ATT&CK Data Sources & Structure",
+        "body": "MITRE publishes ATT&CK as STIX 2.0 JSON — Structured Threat Intelligence eXpression. The full Enterprise matrix is available at https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json. It's a large JSON document (~40MB) containing STIX objects for techniques, groups, software, mitigations, and relationships between them.\n\nEach technique object has: an external_id (T1059.001), a name, a description, a kill_chain_phases list (the tactic it belongs to), and a x_mitre_platforms list (Windows, Linux, macOS, etc.). Sub-techniques share a parent ID prefix — T1059 is Command and Scripting Interpreter, T1059.001 is its PowerShell sub-technique.\n\nFor automation purposes you don't need the full STIX bundle every run. Build a local cache: download once, parse into a lightweight dict keyed by technique ID, save as JSON. Your simulation engine loads from the cache. Refresh it weekly or on-demand. This keeps your tooling fast and your network traffic predictable — a daily multi-MB download to a corporate endpoint stands out in a proxy log."
+      },
+      {
+        "type": "code",
+        "heading": "Fetching and Parsing ATT&CK STIX Data",
+        "body": "This script downloads the ATT&CK Enterprise STIX bundle, extracts technique metadata, builds a local cache keyed by technique ID, and saves it — the foundation of every ATT&CK automation pipeline.",
+        "code": "import json\nimport requests\n\nSTIX_URL   = \"https://raw.githubusercontent.com/mitre/cti/master/enterprise-attack/enterprise-attack.json\"\nCACHE_PATH = \"/tmp/attck_cache.json\"\n\ndef download_attck_stix(url: str = STIX_URL) -> dict:\n    \"\"\"Download the ATT&CK STIX bundle and return the parsed JSON.\"\"\"\n    print(\"[*] Downloading ATT&CK STIX bundle...\")\n    r = requests.get(url, timeout=60)    # Large file — generous timeout\n    r.raise_for_status()\n    return r.json()\n\ndef build_technique_cache(stix_bundle: dict) -> dict:\n    \"\"\"Extract technique objects from STIX bundle into a flat dict keyed by technique ID.\"\"\"\n    cache = {}\n    for obj in stix_bundle.get(\"objects\", []):\n        if obj.get(\"type\") != \"attack-pattern\":  # Techniques are attack-pattern objects\n            continue\n        if obj.get(\"revoked\", False):             # Skip deprecated techniques\n            continue\n        # Extract the external ATT&CK ID (e.g. \"T1059.001\")\n        ext_ids = obj.get(\"external_references\", [])\n        attck_id = next(\n            (ref[\"external_id\"] for ref in ext_ids if ref.get(\"source_name\") == \"mitre-attack\"),\n            None\n        )\n        if not attck_id:\n            continue\n        cache[attck_id] = {\n            \"name\":      obj.get(\"name\"),\n            \"platforms\": obj.get(\"x_mitre_platforms\", []),\n            \"tactics\":   [kc[\"phase_name\"] for kc in obj.get(\"kill_chain_phases\", [])],\n            \"url\":       next((r[\"url\"] for r in ext_ids if r.get(\"source_name\") == \"mitre-attack\"), None),\n        }\n    return cache\n\ndef save_cache(cache: dict, path: str = CACHE_PATH) -> None:\n    with open(path, \"w\") as f:\n        json.dump(cache, f, indent=2)\n    print(f\"[+] Cached {len(cache)} techniques to {path}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Filter for Attack-Pattern Objects",
+        "context": "Inside a loop iterating over STIX objects, write a conditional that skips any object whose \"type\" field is not equal to \"attack-pattern\". Use the \"continue\" statement after the check. Type exactly: \"if obj.get('type') != 'attack-pattern': continue\".",
+        "code_before": "for obj in stix_bundle.get(\"objects\", []):\n",
+        "code_after": "\n    # process technique object",
+        "correct_answer": "    if obj.get('type') != 'attack-pattern': continue"
+      },
+      {
+        "type": "code",
+        "heading": "TTP Simulation Dispatcher in Python",
+        "body": "With the cache loaded, here's the Python simulation dispatcher — a registry of Python functions mapped to technique IDs, with structured result objects and a runner that executes a list of techniques and returns a report.",
+        "code": "import json\nimport subprocess\nimport time\nfrom dataclasses import dataclass, field\nfrom typing import Optional\n\n@dataclass\nclass TTPResult:\n    technique_id: str\n    name:         str\n    success:      bool\n    output:       str\n    duration_ms:  float\n    timestamp:    str = field(default_factory=lambda: time.strftime(\"%Y-%m-%dT%H:%M:%SZ\", time.gmtime()))\n\ndef ttp_system_info() -> TTPResult:       # T1082 — System Information Discovery\n    start = time.time()\n    try:\n        out = subprocess.check_output([\"uname\", \"-a\"], text=True, timeout=10)\n        return TTPResult(\"T1082\", \"System Information Discovery\", True, out.strip(),\n                         (time.time() - start) * 1000)\n    except Exception as e:\n        return TTPResult(\"T1082\", \"System Information Discovery\", False, str(e),\n                         (time.time() - start) * 1000)\n\ndef ttp_process_list() -> TTPResult:      # T1057 — Process Discovery\n    start = time.time()\n    try:\n        out = subprocess.check_output([\"ps\", \"aux\"], text=True, timeout=10)\n        return TTPResult(\"T1057\", \"Process Discovery\", True, out[:500],  # Truncate to 500 chars\n                         (time.time() - start) * 1000)\n    except Exception as e:\n        return TTPResult(\"T1057\", \"Process Discovery\", False, str(e),\n                         (time.time() - start) * 1000)\n\n# Registry: technique ID -> simulation function\nREGISTRY: dict = {\n    \"T1082\": ttp_system_info,\n    \"T1057\": ttp_process_list,\n}\n\ndef run_techniques(ids: list[str]) -> list[TTPResult]:\n    results = []\n    for tid in ids:\n        fn = REGISTRY.get(tid)\n        if fn is None:\n            print(f\"[-] No simulation for {tid}\")\n            continue\n        print(f\"[*] Running {tid}\")\n        results.append(fn())              # Call the mapped function\n    return results"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Look Up Technique in Registry",
+        "context": "Inside the run_techniques function, look up a technique ID stored in variable \"tid\" from a dict named \"REGISTRY\" using the \".get()\" method, assigning the result to \"fn\". Type exactly: \"fn = REGISTRY.get(tid)\".",
+        "code_before": "def run_techniques(ids):\n    results = []\n    for tid in ids:\n",
+        "code_after": "\n        if fn is None:\n            continue\n        results.append(fn())\n    return results",
+        "correct_answer": "        fn = REGISTRY.get(tid)"
+      },
+      {
+        "type": "concept",
+        "heading": "Detection Gaps & Reporting",
+        "body": "Executing techniques is half the purple team loop. The other half is comparing what executed against what was detected. Your TTPResult needs a detections_expected field — a list of SIEM rule IDs or alert names that should fire for this technique. After a run, your report shows three states for each technique: expected and fired (detection working), expected but not fired (detection gap), unexpected fire (false positive from adjacent technique).\n\nDetection gap analysis is the deliverable. A purple team exercise that just confirms attacks work is a red team exercise with extra steps. The value is the mapping: 'T1059.001 executed successfully, Sigma rule proc_creation_powershell_susp_args did not fire — gap identified, rule tuning required.' That sentence, repeated for 50 techniques, is a prioritized defensive backlog.\n\nAutomate the gap report generation. Your run_techniques function returns structured TTPResult objects. Write a generate_report function that takes a list of TTPResult, joins each against the ATT&CK cache for metadata, and outputs JSON with summary statistics: techniques run, succeeded, failed, detections expected, detections confirmed, gap count. Feed that JSON directly into your ticketing system or SIEM dashboard."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Generate a JSON Gap Report",
+        "context": "Given a list of TTPResult dataclass instances named \"results\", serialize the entire list to a JSON-formatted string using \"json.dumps\" with \"default=str\" to handle non-serializable fields, and assign the result to \"report_json\". Type exactly: \"report_json = json.dumps(results, default=str)\".",
+        "code_before": "import json\nfrom dataclasses import asdict\n# results is a list of TTPResult dataclass instances\nresults = []\n",
+        "code_after": "\nprint(report_json[:200])",
+        "correct_answer": "report_json = json.dumps(results, default=str)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You run your ATT&CK automation against a Windows test host. T1059.001 (PowerShell execution) succeeds — your simulation function ran powershell.exe and got output. Your SIEM shows no alert fired. Your detection_expected for T1059.001 lists the rule 'powershell_suspicious_args'. What is the correct conclusion and next action?\n\nA) The technique was blocked — mark it as failed and move on\nB) The SIEM ingestion is broken — restart the log collector before concluding anything\nC) A detection gap exists for T1059.001 — log it and create a ticket to review and tune the Sigma rule\nD) The technique succeeded so the detection is irrelevant — defensive coverage is not the purple team's concern",
+        "options": [
+          "The technique was blocked — mark it as failed",
+          "The SIEM ingestion may be broken — restart the collector before concluding",
+          "A detection gap exists — log it and create a ticket to tune the Sigma rule",
+          "Technique succeeded so detection is irrelevant"
+        ],
+        "correct": 2,
+        "hint": "Recall the definition of the purple team loop from the first concept step — what is the specific deliverable that distinguishes purple teaming from a pure red team exercise?"
+      }
+    ]
+  }
+}

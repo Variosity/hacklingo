@@ -1,0 +1,341 @@
+{
+"m8-3": {
+"steps": [
+{
+"type": "concept",
+"heading": "Ring -1: The Hypervisor",
+"body": "You've conquered Ring 0. Now it's time to go deeper. Modern CPUs support hardware virtualization, creating a new privilege level often called Ring -1. A hypervisor running here has absolute control over the operating system itself.\n\nFrom an offensive perspective, a hypervisor rootkit (like Blue Pill) is the ultimate stealth mechanism. It can intercept memory reads, CPU registers, and hardware interrupts before the host OS even knows they happened. To the OS, the hypervisor is completely invisible."
+},
+{
+"type": "concept",
+"heading": "VMX Root Operation",
+"body": "On Intel processors, virtualization is handled by Virtual Machine Extensions (VMX). To become a hypervisor, your code must transition the CPU into VMX Root Operation.\n\nThis isn't a simple function call. You must verify CPU support, allocate highly specific memory regions (VMXON region and VMCS), and meticulously configure CPU control registers (CR0 and CR4) to enable virtualization features safely."
+},
+{
+"type": "code",
+"heading": "Checking VMX Support",
+"body": "Before we try to launch a hypervisor, we must ensure the CPU actually supports Intel VT-x. We do this using the CPUID instruction.",
+"code": "#include <linux/module.h>\n#include <asm/cpuid.h>\n\n// Check if the CPU supports VMX by querying CPUID feature flags\nbool is_vmx_supported(void) {\n    unsigned int eax, ebx, ecx, edx;\n    \n    // CPUID leaf 1 returns feature information in ECX\n    cpuid(1, &eax, &ebx, &ecx, &edx);\n    \n    // The 5th bit of ECX (bit 5) indicates VMX support\n    if (ecx & (1 << 5)) {\n        return true;\n    }\n    return false;\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "CPUID Query Drill",
+"context": "Call the "cpuid" macro to populate the registers with the CPU's feature information.",
+"code_before": "unsigned int a, b, c, d;\n// Query CPU features (leaf 1)\n",
+"code_after": "(1, &a, &b, &c, &d);\nif (c & (1 << 5)) { return 1; }",
+"correct_answer": "cpuid"
+},
+{
+"type": "code",
+"heading": "Enabling VMX in CR4",
+"body": "If VMX is supported, we must physically flip the switch in the CPU. This requires modifying the CR4 control register to set the VMXE (VMX Enable) bit.",
+"code": "#include <linux/module.h>\n#include <asm/special_insns.h>\n\n// Enable VMX operations in the Control Register\nvoid enable_vmx_operation(void) {\n    unsigned long cr4;\n    \n    // Read the current state of Control Register 4\n    cr4 = __read_cr4();\n    \n    // Set the 13th bit (VMXE - VMX Enable)\n    cr4 |= (1 << 13);\n    \n    // Write the new value back to the register\n    __write_cr4(cr4);\n    printk(KERN_INFO "VMX Operation Enabled in CR4.\n");\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "CR4 Bitwise Drill",
+"context": "Use the bitwise OR assignment operator "|=" to set the 13th bit in the cr4 register without altering the other bits.",
+"code_before": "unsigned long cr4 = **read_cr4();\n// Enable VMXE (bit 13)\ncr4 ",
+"code_after": " (1 << 13);\n__write_cr4(cr4);",
+"correct_answer": "|="
+},
+{
+"type": "concept",
+"heading": "The Alignment Trap",
+"body": "When you allocate memory for the VMXON region and the Virtual Machine Control Structure (VMCS), standard kmalloc is not enough. The Intel manual dictates these structures MUST be 4KB aligned.\n\nIf your memory region starts at a physical address that is not a perfect multiple of 4096 bytes, the VMPTRLD instruction will fail silently or trigger a general protection fault, crashing the entire machine. In Ring -1, the CPU takes no prisoners."
+},
+{
+"type": "code_practice",
+"heading": "Memory Alignment Drill",
+"context": "Use the kernel allocation flag "GFP_KERNEL" when allocating your 4KB aligned contiguous memory for the VMCS.",
+"code_before": "// Allocate one 4KB aligned page\nstruct page *vmcs_page = alloc_pages(",
+"code_after": ", 0);\nif (!vmcs_page) return -ENOMEM;",
+"correct_answer": "GFP_KERNEL"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You successfully allocate your VMCS memory, enable VMX in CR4, and attempt to execute VMLAUNCH. The system immediately hard locks. Reviewing the crash dump, you realize you allocated the memory using a standard kmalloc(). Why did this fail?",
+"options": [
+"kmalloc() memory is read-only by default.",
+"kmalloc() guarantees contiguous virtual memory, but not contiguous physical memory, and it doesn't guarantee 4KB alignment.",
+"The CPU requires memory to be allocated from user-space for the VMCS.",
+"You forgot to hash the VMCS structure before execution."
+],
+"correct": 1,
+"hint": "The CPU's hardware virtualization requires exact physical addresses with strict boundaries, not abstract virtual ones."
+}
+]
+},
+"mod_bgo_1": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Speed of Go",
+"body": "When a breach occurs, the blue team has to sift through terabytes of logs. Python scripts can choke on massive files, running out of memory or taking days to execute.\n\nGo is our weapon of choice for high-speed ingestion. It is a compiled language with aggressive garbage collection and, crucially, native concurrency via Goroutines. We can process massive log files line-by-line, distributing the parsing workload across all available CPU cores without blowing up our RAM."
+},
+{
+"type": "concept",
+"heading": "Streaming with Scanner",
+"body": "Reading a 50GB log file into a single variable using os.ReadFile will instantly crash your program with an Out-of-Memory (OOM) error.\n\nThe fix is streaming. Go's bufio.Scanner reads a file chunk by chunk, usually splitting by newline. You process one line, discard it, and read the next. Your memory footprint stays near zero, regardless of the file size."
+},
+{
+"type": "code",
+"heading": "Setting up the Scanner",
+"body": "Here we open a massive file and set up a scanner to read it line by line efficiently.",
+"code": "package main\n\nimport (\n\t"bufio"\n\t"fmt"\n\t"os"\n)\n\nfunc main() {\n\t// Open the massive log file\n\tfile, err := os.Open("security_events.log")\n\tif err != nil {\n\t\tpanic(err)\n\t}\n\tdefer file.Close()\n\n\t// Initialize the scanner to stream the file\n\tscanner := bufio.NewScanner(file)\n\t\n\t// Iterate through the file one line at a time\n\tfor scanner.Scan() {\n\t\t// Do something with the line (scanner.Text())\n\t\t* = scanner.Text()\n\t}\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Scanner Initialization Drill",
+"context": "Call "bufio.NewScanner" to create a streaming reader for our open file.",
+"code_before": "file, _ := os.Open("logs.txt")\ndefer file.Close()\nscanner := ",
+"code_after": "(file)\nfor scanner.Scan() {}",
+"correct_answer": "bufio.NewScanner"
+},
+{
+"type": "code",
+"heading": "Pumping into Channels",
+"body": "Reading fast isn't enough; we need to parse fast. We read the lines sequentially, but push them into a channel so multiple worker goroutines can parse them concurrently.",
+"code": "package main\n\nimport (\n\t"bufio"\n\t"os"\n)\n\nfunc ingestLogs(filename string, jobs chan<- string) {\n\tfile, _ := os.Open(filename)\n\tdefer file.Close()\n\n\tscanner := bufio.NewScanner(file)\n\t\n\t// Pump lines into the jobs channel for workers to process\n\tfor scanner.Scan() {\n\t\tjobs <- scanner.Text()\n\t}\n\t\n\t// Always close the channel when done sending to prevent deadlocks\n\tclose(jobs)\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Channel Send Drill",
+"context": "Use the "<-" operator to send the scanned text into the jobs channel.",
+"code_before": "for scanner.Scan() {\n\tjobs ",
+"code_after": " scanner.Text()\n}\nclose(jobs)",
+"correct_answer": "<-"
+},
+{
+"type": "concept",
+"heading": "The Token Too Long Trap",
+"body": "A common gotcha with bufio.Scanner occurs when encountering massive log lines (like an encoded PowerShell script in a command-line event). The default scanner buffer maxes out at 64KB.\n\nIf a line exceeds this, the scanner stops and returns a bufio.ErrTooLong error. To ingest heavy enterprise logs, you must manually allocate a larger buffer and apply it to the scanner before starting the loop."
+},
+{
+"type": "code_practice",
+"heading": "Buffer Expansion Drill",
+"context": "Call the "Buffer" method on the scanner to assign our custom, larger byte slice.",
+"code_before": "scanner := bufio.NewScanner(file)\ncustomBuf := make([]byte, 0, 1024*1024) // 1MB buffer\nscanner.",
+"code_after": "(customBuf, 1024*1024)\nfor scanner.Scan() {}",
+"correct_answer": "Buffer"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Your Go ingestion script reads a 10GB file in seconds, pushing lines into a channel where 5 worker goroutines perform regex matching. However, the program exits almost immediately, and no logs are actually processed. What went wrong?",
+"options": [
+"The bufio.Scanner buffer was too small.",
+"The main function exited before the worker goroutines finished processing the channel, killing the workers instantly.",
+"You cannot use regex inside a goroutine.",
+"Channels have a hard limit of 64,000 messages."
+],
+"correct": 1,
+"hint": "Goroutines execute asynchronously in the background. The main function doesn't automatically wait for them."
+}
+]
+},
+"mod_bgo_2": {
+"steps": [
+{
+"type": "concept",
+"heading": "Taming XML Concurrent Logs",
+"body": "Windows Event Logs (EVTX) are notoriously ugly. When exported, they usually end up as massive XML blobs. Manually parsing XML with regex is a fast track to broken logic and false positives.\n\nGo provides a robust encoding/xml standard library. Instead of manual string manipulation, we define Go structs with specific tags, allowing Go to automatically unmarshal the raw XML bytes directly into neatly typed, accessible data structures."
+},
+{
+"type": "concept",
+"heading": "Struct Tags",
+"body": "Go uses struct tags—metadata appended to struct fields—to tell the XML parser how to map the data. \n\nIf you have an EventID element in your XML, you define an integer field in your Go struct and tag it with `xml:\"EventID\"`. The parser handles the rest, allowing you to easily extract deeply nested metadata (like Logon Types or Source IPs) without writing manual traversal code."
+},
+{
+"type": "code",
+"heading": "Defining the XML Struct",
+"body": "We define our struct to perfectly map the nested structure of a Windows Event Log. Notice the XML tags acting as the glue.",
+"code": "package main\n\nimport "encoding/xml"\n\n// Event represents the root of our Windows Event log entry\ntype Event struct {\n\t// The > indicates nesting. We go into System, then grab EventID\n\tEventID   int    `xml:\"System>EventID\"`\n\tComputer  string `xml:\"System>Computer\"`\n\t// We map EventData as a raw string for custom parsing later\n\tEventData string `xml:\"EventData\"`\n}\n\nfunc main() {\n\t// Setup for parsing...\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Struct Tag Drill",
+"context": "Use the struct tag "xml:\"System>EventID\"" to map the integer field directly to the nested XML element.",
+"code_before": "type WinLog struct {\n\tID int `", "code_after": "`\n}",
+"correct_answer": "xml:"System>EventID""
+},
+{
+"type": "code",
+"heading": "Worker Pools and WaitGroups",
+"body": "To parse concurrently, we spawn a pool of worker goroutines. We use a sync.WaitGroup to ensure our main program waits for all workers to finish their unmarshaling tasks before exiting.",
+"code": "package main\n\nimport (\n\t"encoding/xml"\n\t"sync"\n)\n\ntype Event struct { ID int `xml:\"EventID\"` }\n\n// The worker pulls raw XML strings from jobs and unmarshals them\nfunc xmlWorker(jobs <-chan string, wg *sync.WaitGroup) {\n\t// Ensure we signal the WaitGroup when this worker completes\n\tdefer wg.Done()\n\t\n\tfor rawXML := range jobs {\n\t\tvar ev Event\n\t\t// Convert the string to bytes and unmarshal into our struct\n\t\txml.Unmarshal([]byte(rawXML), &ev)\n\t}\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "WaitGroup Done Drill",
+"context": "Call "wg.Done()" using a defer statement to signal that the worker goroutine has finished its tasks.",
+"code_before": "func worker(jobs <-chan string, wg *sync.WaitGroup) {\n\tdefer ",
+"code_after": "\n\tfor j := range jobs { _ = j }\n}",
+"correct_answer": "wg.Done()"
+},
+{
+"type": "concept",
+"heading": "The Map Data Race",
+"body": "As your concurrent workers parse XML, you might want them to save the results to a shared global map (e.g., counting occurrences of Event ID 4624).\n\nGo maps are NOT safe for concurrent use. If two goroutines attempt to write to the same map at the exact same millisecond, Go will instantly panic and crash the program with a 'concurrent map writes' error. You must synchronize access using a sync.Mutex."
+},
+{
+"type": "code_practice",
+"heading": "Mutex Lock Drill",
+"context": "Call the "Lock" method on the mutex before writing to the shared global map.",
+"code_before": "var mu sync.Mutex\nvar counts = make(map[int]int)\n\nfunc updateCount(id int) {\n\tmu.",
+"code_after": "()\n\tcounts[id]++\n\tmu.Unlock()\n}",
+"correct_answer": "Lock"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You built an XML parser that reads EVTX data. Your struct has `Computer string xml:\"Computer\"`. The XML has nested elements. When you run the code, the Computer string is always empty. Why?",
+"options": [
+"Strings must be converted to byte slices before unmarshaling.",
+"You used a mutex and locked the variable during unmarshaling.",
+"The struct tag failed to specify the nested path.",
+"Go's encoding/xml package does not support Windows EVTX formatting."
+],
+"correct": 2,
+"hint": "The XML parser needs exact directions. It doesn't automatically search the entire XML tree if an element is nested inside another."
+}
+]
+},
+"mod_bgo_3": {
+"steps": [
+{
+"type": "concept",
+"heading": "Automating Incident Response",
+"body": "Manual IR is a losing battle. If an analyst has to manually extract a hash, copy it to VirusTotal, check the score, log into the firewall, and click 'Block', the adversary has already pivoted.\n\nWe need code that acts. Go's standard library net/http makes it incredibly simple to build API clients. We can orchestrate an entire containment pipeline—querying threat feeds and pushing isolation commands—in milliseconds."
+},
+{
+"type": "concept",
+"heading": "The Custom Client",
+"body": "Using Go's default http.Get() or http.Post() is dangerous for production security tools. The default HTTP client has NO timeout. If the firewall API server hangs, your Go program will wait forever, consuming resources until it crashes.\n\nYou must build custom http.Client instances with strict timeout boundaries to ensure your automation pipeline remains resilient."
+},
+{
+"type": "code",
+"heading": "A Resilient HTTP Client",
+"body": "Here we construct a secure client with a strict 10-second timeout, ensuring our pipeline never hangs indefinitely.",
+"code": "package main\n\nimport (\n\t"net/http"\n\t"time"\n)\n\n// Setup an HTTP client with a strict timeout policy\nfunc getSecureClient() *http.Client {\n\tclient := &http.Client{\n\t\t// If the server doesn't respond in 10 seconds, abort the request\n\t\tTimeout: 10 * time.Second,\n\t}\n\treturn client\n}\n\nfunc main() {\n\tc := getSecureClient()\n\t// Use client for API calls...\n\t* = c\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Timeout Configuration Drill",
+"context": "Set the "Timeout" field to 5 * time.Second to prevent the client from hanging on a dead API.",
+"code_before": "client := &http.Client{\n\t",
+"code_after": ": 5 * time.Second,\n}",
+"correct_answer": "Timeout"
+},
+{
+"type": "code",
+"heading": "Executing a Containment Request",
+"body": "To isolate a host, we generate a JSON payload and push it via an HTTP POST request to our EDR or Firewall API.",
+"code": "package main\n\nimport (\n\t"bytes"\n\t"net/http"\n\t"time"\n)\n\nfunc isolateHost(ip string) {\n\tclient := &http.Client{Timeout: 5 * time.Second}\n\t\n\t// The payload the firewall API expects\n\tpayload := []byte(`{\"action\":\"isolate\", \"target\":\"` + ip + `\"}`)\n\t\n\t// Construct the HTTP request with the POST method\n\treq, err := http.NewRequest("POST", "[https://api.firewall.local/v1/block](https://www.google.com/search?q=https://api.firewall.local/v1/block)", bytes.NewBuffer(payload))\n\tif err != nil { return }\n\t\n\t// Ensure headers declare we are sending JSON\n\treq.Header.Set("Content-Type", "application/json")\n\t\n\t// Execute the request\n\tresp, err := client.Do(req)\n\tif err == nil { resp.Body.Close() }\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "POST Request Drill",
+"context": "Use the method "POST" when calling http.NewRequest to send data to the API.",
+"code_before": "payload := bytes.NewBuffer([]byte(`{\"block\":\"10.0.0.5\"}`))\nreq, _ := http.NewRequest("",
+"code_after": "", "[https://api.fw/block](https://www.google.com/search?q=https://api.fw/block)", payload)",
+"correct_answer": "POST"
+},
+{
+"type": "concept",
+"heading": "The Body Leak",
+"body": "Notice resp.Body.Close() in the previous example? That is not optional. \n\nWhen you make an HTTP request in Go, the underlying TCP connection remains open until you explicitly close the response body. If you forget to defer closing the body, your tool will leak file descriptors. In a high-volume IR pipeline checking thousands of IOCs, this leak will exhaust the OS connection pool in minutes, taking down your entire automation system."
+},
+{
+"type": "code_practice",
+"heading": "Body Closure Drill",
+"context": "Call the "Close" method on the response body via a defer statement immediately after handling the error.",
+"code_before": "resp, err := client.Do(req)\nif err != nil { return }\ndefer resp.Body.",
+"code_after": "()",
+"correct_answer": "Close"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Your Go automation tool successfully hits the VirusTotal API 1,024 times. On the 1,025th request, the script crashes with 'socket: too many open files'. You check your code and see you set a Timeout of 5 seconds. What is the cause?",
+"options": [
+"VirusTotal rate-limited your IP address.",
+"You used http.Get() instead of a custom POST request.",
+"The 5-second timeout only applies to the DNS resolution, not the TCP handshake.",
+"You forgot to call resp.Body.Close(), exhausting the system's file descriptors."
+],
+"correct": 3,
+"hint": "Timeouts kill slow requests, but they don't clean up the underlying resources of successful ones."
+}
+]
+},
+"mod_bgo_boss": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Aggregator Architecture",
+"body": "It's time for the final boss. We are building a Distributed Threat Intel Aggregator. This daemon will query multiple C2 tracker feeds concurrently, parse the JSON, deduplicate the malicious IP addresses, and serve them internally.\n\nThis requires fusing everything: worker goroutines (fan-out/fan-in), HTTP clients with timeouts, read/write mutexes for safe concurrent data storage, and context management for graceful shutdowns."
+},
+{
+"type": "concept",
+"heading": "RWMutex for Read-Heavy Maps",
+"body": "Our deduplication map will be written to when we fetch new feeds, but read from constantly by our internal security tools. \n\nA standard sync.Mutex locks the map completely. A sync.RWMutex (Read/Write Mutex) is better. It allows multiple goroutines to read the map simultaneously, only locking completely when a worker needs to write a new IP. This massively increases performance."
+},
+{
+"type": "code",
+"heading": "The Concurrent Cache Struct",
+"body": "We encapsulate our map and our RWMutex in a struct, providing a clean interface for safe access.",
+"code": "package main\n\nimport "sync"\n\n// IntelCache safely stores our deduplicated IOCs\ntype IntelCache struct {\n\t// RWMutex allows multiple concurrent readers, but exclusive writers\n\tmu    sync.RWMutex\n\t// The map storing malicious IPs\n\tiocs  map[string]bool\n}\n\n// Add securely writes an IP to the cache\nfunc (c *IntelCache) Add(ip string) {\n\tc.mu.Lock()\n\tdefer c.mu.Unlock()\n\tc.iocs[ip] = true\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "RWMutex Drill",
+"context": "Declare the mutex field using the type "sync.RWMutex" for read/write locking capabilities.",
+"code_before": "type SafeCache struct {\n\tmu ",
+"code_after": "\n\tdata map[string]int\n}",
+"correct_answer": "sync.RWMutex"
+},
+{
+"type": "code",
+"heading": "The Fan-In Pattern",
+"body": "We want to query 5 threat feeds simultaneously. We spawn 5 goroutines that execute HTTP requests. They all return their extracted IPs into a single, shared channel. This is the fan-in pattern.",
+"code": "package main\n\nimport (\n\t"sync"\n)\n\n// fetchFeed simulates grabbing IPs from a URL and sending them to a channel\nfunc fetchFeed(url string, results chan<- string, wg *sync.WaitGroup) {\n\tdefer wg.Done()\n\t// In reality, this is an HTTP GET and JSON unmarshaling\n\tresults <- "192.168.1.50" // Mock IP\n}\n\nfunc aggregate(urls []string) <-chan string {\n\tresults := make(chan string, 100)\n\tvar wg sync.WaitGroup\n\t\n\t// Fan-out: spawn a goroutine for each URL\n\tfor _, u := range urls {\n\t\twg.Add(1)\n\t\tgo fetchFeed(u, results, &wg)\n\t}\n\t\n\t// Wait in background and close channel when all fetchers finish\n\tgo func() {\n\t\twg.Wait()\n\t\tclose(results)\n\t}()\n\t\n\treturn results\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Goroutine Fan-Out Drill",
+"context": "Launch the "fetchFeed" function concurrently using the "go" keyword.",
+"code_before": "for _, url := range feeds {\n\twg.Add(1)\n\t",
+"code_after": " fetchFeed(url, results, &wg)\n}",
+"correct_answer": "go"
+},
+{
+"type": "concept",
+"heading": "Context Cancellation",
+"body": "If an administrator hits CTRL+C to restart the daemon, we shouldn't just forcefully kill the process. Active HTTP requests will break, and the cache might be corrupted.\n\nWe use the context package. We pass a Context to all our fetcher goroutines. When a SIGINT is received, we cancel the context. The goroutines listen for the ctx.Done() signal, abort their HTTP requests cleanly, and exit gracefully."
+},
+{
+"type": "code_practice",
+"heading": "Context Listener Drill",
+"context": "Listen to the "ctx.Done()" channel inside your select statement to catch the cancellation signal.",
+"code_before": "select {\ncase res := <-apiChannel:\n\treturn res, nil\ncase <-",
+"code_after": ":\n\treturn "", ctx.Err()\n}",
+"correct_answer": "ctx.Done()"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Your aggregator is crashing sporadically. You are using sync.RWMutex. In your query function (which serves IPs to the firewall), you use c.mu.Lock() at the start and c.mu.Unlock() at the end. In the fetch function (which adds IPs), you also use c.mu.Lock(). Why is performance terrible and sometimes deadlocking?",
+"options": [
+"RWMutex is not supported in Go 1.18+.",
+"You are using a full write lock (Lock) for read-only operations, completely negating the benefit of an RWMutex and blocking all concurrent reads.",
+"You cannot use mutexes inside a goroutine.",
+"The channel buffer size is too small."
+],
+"correct": 1,
+"hint": "If you only need to read data, you shouldn't hold the lock that prevents other readers."
+}
+]
+}
+}

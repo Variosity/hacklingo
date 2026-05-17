@@ -1,0 +1,342 @@
+{
+  "mod_net_6": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "HTTP's Fundamental Mismatch",
+        "body": "HTTP was designed for a request-response world: client asks, server answers, connection closes. That model works fine for fetching documents. It falls apart the moment you need the server to push data to the client — stock ticks, chat messages, live game state, collaborative editor cursors. The naive fix is polling: client asks 'anything new?' every second. Multiply by a million users and you have built a very expensive nothing-happened notification system.\n\nLong polling was the first real improvement: the client sends a request, the server holds it open until data is available, then responds. The client immediately fires another request. Latency drops to near-zero, bandwidth drops because most requests carry actual data. The cost is that every waiting client consumes a server thread or file descriptor, and HTTP overhead — headers, TCP setup — still fires on every round trip."
+      },
+      {
+        "type": "concept",
+        "heading": "The WebSocket Upgrade",
+        "body": "WebSockets solve the problem at the protocol level. The handshake starts as HTTP — a GET request with specific headers: `Upgrade: websocket`, `Connection: Upgrade`, and a base64-encoded random nonce in `Sec-WebSocket-Key`. The server responds with 101 Switching Protocols and a derived accept key. After that, the HTTP connection is gone and a bidirectional binary framing protocol rides the same TCP connection.\n\nFrames have a two-to-ten byte header: opcode (text, binary, ping, pong, close), a payload length, and a masking key. Clients MUST mask frames sent to servers — this is mandated by the RFC to prevent cache poisoning attacks on HTTP proxies that might misinterpret WebSocket frames as HTTP responses. Servers must NOT mask frames sent to clients.\n\nFor security: WebSocket connections inherit the origin of the page that opened them, but the server must validate the `Origin` header explicitly — the browser does not enforce same-origin policy on WebSocket connections the way it does on XHR. Missing origin validation is a Cross-Site WebSocket Hijacking (CSWSH) vulnerability."
+      },
+      {
+        "type": "code",
+        "heading": "WebSocket server and client",
+        "body": "A minimal asyncio WebSocket server and a matching client. The full upgrade handshake and framing are handled by the library; what you write is pure message logic.",
+        "code": "# Server — pip install websockets\nimport asyncio\nimport websockets\n\nasync def handler(websocket):\n    \"\"\"Called once per connected client. Loop until disconnect.\"\"\"\n    async for message in websocket:          # Iterates over incoming frames\n        print(f\"Received: {message}\")\n        await websocket.send(f\"Echo: {message}\")  # Bidirectional push\n\nasync def main():\n    # serve() manages accept loop, TLS, and graceful shutdown\n    async with websockets.serve(handler, \"localhost\", 8765):\n        await asyncio.Future()               # Run forever\n\n# asyncio.run(main())  # Uncomment to run\n\n# Client — connect, send, receive\nasync def client():\n    async with websockets.connect(\"ws://localhost:8765\") as ws:\n        await ws.send(\"hello server\")        # Push from client\n        reply = await ws.recv()              # Block until frame arrives\n        print(f\"Got: {reply}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Send a WebSocket message",
+        "context": "Send the string \"hello server\" over the open WebSocket connection \"ws\" by calling \"await ws.send\" with that string.",
+        "code_before": "import asyncio\nimport websockets\n\nasync def client():\n    async with websockets.connect(\"ws://localhost:8765\") as ws:\n        # Push a message to the server — no HTTP overhead, just a frame\n",
+        "code_after": "\n        reply = await ws.recv()\n        print(f\"Server replied: {reply}\")",
+        "correct_answer": "await ws.send(\"hello server\")"
+      },
+      {
+        "type": "code",
+        "heading": "Long polling implementation",
+        "body": "Long polling with Flask and a threading Event. The server parks the request until new data arrives, then responds. The client loops.",
+        "code": "from flask import Flask, jsonify, request\nimport threading\nimport time\n\napp = Flask(__name__)\n\n# Shared state — a threading.Event signals when new data exists\n_event = threading.Event()\n_data = {\"value\": None}\n\n@app.route(\"/poll\")\ndef long_poll():\n    \"\"\"Client waits up to 30s. Returns immediately if data already waiting.\"\"\"\n    arrived = _event.wait(timeout=30)        # Block the request thread\n    if arrived:\n        _event.clear()                       # Reset for next poll cycle\n        return jsonify({\"data\": _data[\"value\"], \"timeout\": False})\n    return jsonify({\"data\": None, \"timeout\": True})\n\n@app.route(\"/publish\", methods=[\"POST\"])\ndef publish():\n    \"\"\"Push side: write new data and wake all waiting pollers.\"\"\"\n    _data[\"value\"] = request.json.get(\"value\")\n    _event.set()                             # Wake every thread blocked on .wait()\n    return jsonify({\"ok\": True})"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Wait for the event",
+        "context": "Block the current thread for up to 30 seconds by calling \"_event.wait\" with \"timeout=30\", assigning the boolean result to \"arrived\".",
+        "code_before": "import threading\n\n_event = threading.Event()\n\n# Returns True if event was set, False if timeout expired\n",
+        "code_after": "\nif arrived:\n    print(\"Data arrived!\")\nelse:\n    print(\"Timed out — send empty response, client re-polls\")",
+        "correct_answer": "arrived = _event.wait(timeout=30)"
+      },
+      {
+        "type": "concept",
+        "heading": "Security Implications",
+        "body": "WebSocket connections bypass most HTTP-layer security controls once the upgrade completes. WAF rules that inspect HTTP request paths and parameters see only the initial handshake GET — the subsequent bidirectional binary stream is opaque unless the WAF has WebSocket-specific inspection. An attacker who tunnels C2 traffic over wss:// (WebSocket over TLS) on port 443 blends into normal web traffic almost perfectly.\n\nCross-Site WebSocket Hijacking: if a WebSocket endpoint uses cookies for authentication but does not validate the `Origin` header, a malicious page on evil.com can open a WebSocket to victim.com and inherit the user's session cookies. The fix is one line: reject connections whose Origin does not match your expected domain list.\n\nLong polling has its own footgun: if your server holds thousands of threads blocked on I/O and gets a burst of publishes, you suddenly wake every thread simultaneously. Thread pool exhaustion follows. Async frameworks (asyncio, Node.js event loop) handle this better because waiting requests consume a coroutine slot, not an OS thread. HTTP/2 server-sent events (SSE) are a lighter alternative for one-directional push that works with standard HTTP tooling."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Receive a WebSocket frame",
+        "context": "Receive the next incoming frame from the WebSocket connection \"ws\" by calling \"await ws.recv()\", assigning to \"message\".",
+        "code_before": "import asyncio\nimport websockets\n\nasync def listen():\n    async with websockets.connect(\"ws://localhost:8765\") as ws:\n        await ws.send(\"subscribe:prices\")\n        # Block until the server pushes the next frame\n",
+        "code_after": "\n        print(f\"Push received: {message}\")",
+        "correct_answer": "message = await ws.recv()"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "A bug bounty hunter reports that your trading platform's WebSocket endpoint at wss://app.example.com/feed authenticates via session cookie and streams live portfolio data. She demonstrates that a page hosted on attacker.com can open a WebSocket connection to the endpoint and receive the victim user's portfolio stream if the victim visits attacker.com while logged in. What is the missing control and the one-line fix?",
+        "options": [
+          "The server does not validate the Origin header. Fix: reject WebSocket upgrade requests where the Origin header does not match a whitelist of allowed domains.",
+          "The endpoint uses cookies instead of tokens. Fix: switch to JWT Bearer tokens passed in the WebSocket URL query string.",
+          "The WebSocket connection is not encrypted. Fix: upgrade from ws:// to wss:// to prevent cross-origin reads.",
+          "The session cookie lacks the SameSite=Strict attribute. Fix: set SameSite=Strict to prevent the cookie from being sent cross-origin."
+        ],
+        "correct": 0,
+        "hint": "The browser sends cookies on WebSocket connections regardless of origin. Something the server can check during the HTTP upgrade tells it where the connection request originated. Is it checked?"
+      }
+    ]
+  },
+  "mod_net_boss": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Below the Socket API",
+        "body": "Every networking tool you have ever used — tcpdump, Wireshark, nmap, netstat — ultimately reads packets from a raw socket or a libpcap handle that sits below the TCP/UDP stack. When you open a regular socket, the kernel has already stripped the Ethernet and IP headers before handing you the payload. A raw socket reverses that: the kernel delivers the entire frame, headers and all, and you parse them yourself.\n\nBuilding a packet sniffer from scratch is the best way to internalize every protocol header you have been taking for granted. By the end you will read hexdumps the way other people read text."
+      },
+      {
+        "type": "concept",
+        "heading": "Parsing the Wire",
+        "body": "Ethernet frames have a fixed 14-byte header: 6 bytes destination MAC, 6 bytes source MAC, 2 bytes EtherType. EtherType 0x0800 means the payload is IPv4. EtherType 0x0806 is ARP. EtherType 0x86DD is IPv6.\n\nIPv4 headers are a minimum of 20 bytes. The IHL (Internet Header Length) field in the first byte's lower nibble gives the header size in 32-bit words — multiply by 4 to get bytes. Protocol field tells you what is inside: 6 is TCP, 17 is UDP, 1 is ICMP. Source and destination IPs are at bytes 12-15 and 16-19.\n\nTCP headers are also 20 bytes minimum. Source port at bytes 0-1, destination port at 2-3, sequence number at 4-7, acknowledgment number at 8-11, data offset in the upper nibble of byte 12, flags in the lower 6 bits of byte 13. Knowing these offsets by heart means a hex dump tells you everything without a tool."
+      },
+      {
+        "type": "code",
+        "heading": "Raw socket and Ethernet parser",
+        "body": "The foundation: open the socket, capture a frame, parse the Ethernet header. Every subsequent layer builds on this.",
+        "code": "import socket\nimport struct\n\ndef mac_to_str(raw_bytes):\n    \"\"\"Convert 6 raw bytes to a human-readable MAC address string.\"\"\"\n    return ':'.join(f'{b:02x}' for b in raw_bytes)\n\n# AF_PACKET requires root/CAP_NET_RAW; captures every Ethernet frame\ntry:\n    s = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,\n                      socket.htons(0x0003))  # ETH_P_ALL\nexcept PermissionError:\n    print(\"Run as root\")\n    exit(1)\n\nframe, _ = s.recvfrom(65535)\n\n# Ethernet header: dst(6) + src(6) + ethertype(2) = 14 bytes\ndst_mac = mac_to_str(frame[0:6])\nsrc_mac = mac_to_str(frame[6:12])\nethertype = struct.unpack('!H', frame[12:14])[0]  # Big-endian unsigned short\n\nprint(f\"ETH  {src_mac} -> {dst_mac}  type=0x{ethertype:04x}\")\nipv4_payload = frame[14:]   # Everything after the 14-byte Ethernet header"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Parse EtherType",
+        "context": "Unpack the EtherType field from bytes 12-14 of \"frame\" using \"struct.unpack\" with format \"'!H'\" and slice \"frame[12:14]\", assigning the first element to \"ethertype\".",
+        "code_before": "import struct\n\n# Simulated raw Ethernet frame (14-byte header)\nframe = bytes.fromhex(\"ffffffffffff001122334455\") + b'\\x08\\x00' + b'\\x00' * 20\n\n# EtherType is a 2-byte big-endian unsigned short at offset 12\n",
+        "code_after": "\nprint(f\"EtherType: 0x{ethertype:04x}\")  # Expect 0x0800 = IPv4",
+        "correct_answer": "ethertype, = struct.unpack('!H', frame[12:14])"
+      },
+      {
+        "type": "code",
+        "heading": "IPv4 and TCP parsers",
+        "body": "Layer 3 and Layer 4 parsing stacked on top of the Ethernet foundation. Struct format strings are the key — commit the IPv4 header layout to memory.",
+        "code": "import struct\nimport socket as sock\n\ndef parse_ipv4(data):\n    \"\"\"Parse an IPv4 header. Returns (proto, src_ip, dst_ip, payload).\"\"\"\n    # B = unsigned char, H = unsigned short, 4s = 4-byte string\n    ihl = (data[0] & 0x0F) * 4      # Lower nibble of first byte * 4 = header bytes\n    proto = data[9]                  # Protocol field at byte 9\n    src = sock.inet_ntoa(data[12:16])\n    dst = sock.inet_ntoa(data[16:20])\n    return proto, src, dst, data[ihl:]   # Payload starts after the header\n\ndef parse_tcp(data):\n    \"\"\"Parse a TCP header. Returns (sport, dport, seq, ack, flags, payload).\"\"\"\n    sport, dport, seq, ack = struct.unpack('!HHII', data[0:12])\n    offset = ((data[12] >> 4) * 4)   # Data offset field gives TCP header length\n    flags = data[13] & 0x3F          # Lower 6 bits: URG ACK PSH RST SYN FIN\n    return sport, dport, seq, ack, flags, data[offset:]\n\n# Flag bitmask helpers\nFLAG_NAMES = {0x02:'SYN', 0x10:'ACK', 0x01:'FIN', 0x04:'RST', 0x08:'PSH'}\nflag_str = lambda f: '|'.join(n for b,n in FLAG_NAMES.items() if f & b)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Extract IPv4 header length",
+        "context": "Compute the IPv4 header length in bytes by applying the bitmask \"0x0F\" to \"data[0]\" and multiplying by 4, assigning to \"ihl\".",
+        "code_before": "# data is the raw IPv4 payload (after stripping the Ethernet header)\n# The IHL field is the lower nibble of the first byte, in 32-bit word units\ndata = bytes.fromhex(\"45000028\" + \"00\" * 16)  # version=4, IHL=5 (20 bytes)\n\n",
+        "code_after": "\nprint(f\"IPv4 header length: {ihl} bytes\")  # Expect 20",
+        "correct_answer": "ihl = (data[0] & 0x0F) * 4"
+      },
+      {
+        "type": "concept",
+        "heading": "Filtering and Output",
+        "body": "A sniffer that dumps every frame to the terminal is useless in under three seconds on a busy network. Real sniffers filter. BPF (Berkeley Packet Filter) does this in kernel space before frames ever reach your process, which is why tcpdump does not melt CPUs. When you do `tcpdump -f 'tcp port 80'`, the kernel compiles that expression into bytecode that runs in the packet processing path.\n\nFor a Python sniffer you can do two things: apply a BPF filter via `setsockopt` with `SO_ATTACH_FILTER`, or filter in userspace after `recvfrom`. Userspace filtering is simpler to write and fine for educational purposes; for production tooling, push filters into the kernel.\n\nOutput discipline matters: print only what is interesting. A good sniffer shows timestamp, protocol, source IP:port → destination IP:port, flags, sequence deltas, and the first N bytes of payload in hex. Adding color per protocol (green for TCP, yellow for UDP, red for ICMP) makes scanning output fast. Write to a PCAP file with a proper header and record format and Wireshark can open it directly."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Convert IP bytes to string",
+        "context": "Convert the 4-byte slice \"data[12:16]\" to a dotted-decimal IP address string using \"socket.inet_ntoa\", assigning to \"src_ip\".",
+        "code_before": "import socket\n\n# Raw IPv4 header bytes — src IP is at offset 12, 4 bytes\ndata = bytes.fromhex(\"4500002800004000401100007f0000017f000001\")\n\n",
+        "code_after": "\nprint(f\"Source IP: {src_ip}\")  # Expect 127.0.0.1",
+        "correct_answer": "src_ip = socket.inet_ntoa(data[12:16])"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Your raw socket sniffer is running on a Linux host and captures every packet it sees. A colleague says 'I'm sending SYN packets from 192.168.1.100 to port 443 on this machine' but your sniffer shows nothing. You are running as root, AF_PACKET socket is open, ETH_P_ALL is set. The most likely cause?",
+        "options": [
+          "The sniffer is bound to the wrong interface. AF_PACKET sockets bind to a specific interface; if not explicitly bound, behavior is implementation-defined and may miss traffic on some interfaces.",
+          "AF_PACKET cannot capture TCP traffic, only UDP and ICMP.",
+          "The kernel drops SYN packets before they reach AF_PACKET because the port is filtered.",
+          "Root privilege is insufficient; CAP_NET_ADMIN is required instead of CAP_NET_RAW."
+        ],
+        "correct": 0,
+        "hint": "AF_PACKET delivers frames from network interfaces. If you have multiple interfaces (lo, eth0, eth1, wlan0), which one is the traffic arriving on, and did you tell the socket which one to watch?"
+      }
+    ]
+  },
+  "mod_op_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Onions All The Way",
+        "body": "Tor — The Onion Router — provides anonymity by routing your traffic through a chain of three volunteer-operated relays before it exits to the destination. Each relay knows only its immediate predecessor and successor in the chain. The exit relay sees your traffic but not your IP. The guard relay sees your IP but not your traffic or destination. No single relay has the full picture.\n\nThe 'onion' comes from the encryption: your Tor client wraps the payload in three layers of encryption, one per relay, using keys negotiated with each relay separately. Each relay peels its own layer, forwards what is inside, and cannot read deeper. Intercept traffic between any two relays and you have an encrypted blob addressed to the next hop — nothing more."
+      },
+      {
+        "type": "concept",
+        "heading": "Circuits and Hidden Services",
+        "body": "Before sending any data, the Tor client builds a circuit: a three-hop path selected from the consensus directory maintained by directory authorities. The selection is weighted by bandwidth but includes randomness. Circuit building takes a few seconds and involves multiple Diffie-Hellman exchanges, one per hop. Circuits are periodically rotated — by default every ten minutes — so no single circuit carries enough traffic to enable timing correlation.\n\nOnion services (.onion addresses) work differently. The service generates an Ed25519 keypair; the public key encodes to a 56-character .onion address. The service builds circuits to introduction points and registers them with the directory. A client builds a circuit to a rendezvous point, sends the address to the service via an introduction point, and the service connects to the rendezvous point. Neither party learns the other's IP. This is how whistleblowing platforms, SecureDrop instances, and certain C2 frameworks operate."
+      },
+      {
+        "type": "code",
+        "heading": "Torify Python requests",
+        "body": "Route HTTP traffic over Tor using the SOCKS5 proxy that the Tor Browser or the tor daemon exposes on localhost:9050.",
+        "code": "import requests\n\n# Tor exposes a SOCKS5 proxy on 127.0.0.1:9050 when the daemon is running\n# Route both HTTP and HTTPS traffic through it\nTOR_PROXY = {\n    'http':  'socks5h://127.0.0.1:9050',   # socks5h = remote DNS resolution\n    'https': 'socks5h://127.0.0.1:9050',   # Critical: do NOT use socks5:// which leaks DNS\n}\n\n# Check what exit IP Tor gives us\ntry:\n    resp = requests.get('https://check.torproject.org/api/ip',\n                        proxies=TOR_PROXY, timeout=30)\n    data = resp.json()\n    print(f\"Using Tor: {data['IsTor']}\")\n    print(f\"Exit IP:   {data['IP']}\")\nexcept requests.exceptions.ConnectionError:\n    print(\"Tor daemon not running — start with: systemctl start tor\")\n\n# Access an onion service — only reachable through Tor\nonion_resp = requests.get('http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion',\n                          proxies=TOR_PROXY, timeout=60)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define the Tor proxy dict",
+        "context": "Define a variable named \"TOR_PROXY\" as a dict with keys \"'http'\" and \"'https'\" both set to the string \"'socks5h://127.0.0.1:9050'\".",
+        "code_before": "import requests\n\n# socks5h routes DNS through Tor — essential to prevent DNS leaks\n",
+        "code_after": "\nresp = requests.get('https://check.torproject.org/api/ip',\n                    proxies=TOR_PROXY, timeout=30)\nprint(resp.json())",
+        "correct_answer": "TOR_PROXY = {'http': 'socks5h://127.0.0.1:9050', 'https': 'socks5h://127.0.0.1:9050'}"
+      },
+      {
+        "type": "code",
+        "heading": "Stem: Tor control protocol",
+        "body": "Stem is a Python library for the Tor control protocol. It lets you build circuits, request new identities, read relay descriptors, and monitor your Tor process programmatically.",
+        "code": "import stem\nimport stem.control\nimport time\n\n# The control port (9051) accepts commands after authentication\n# tor must be configured with ControlPort 9051 and HashedControlPassword or CookieAuthentication\ntry:\n    with stem.control.Controller.from_port(port=9051) as ctrl:\n        ctrl.authenticate()              # No password if CookieAuthentication is set\n\n        # Request a fresh circuit — new exit IP, new path\n        ctrl.signal(stem.Signal.NEWNYM)\n        print(\"New identity requested — wait 10s for circuit rotation\")\n        time.sleep(10)                   # NEWNYM has a rate limit of ~10s\n\n        # List all currently established circuits\n        for circ in ctrl.get_circuits():\n            path = ' -> '.join(f\"{r[1]}\" for r in circ.path)\n            print(f\"Circuit {circ.id}: {path}  status={circ.status}\")\nexcept stem.SocketError:\n    print(\"Control port not accessible — check torrc for ControlPort 9051\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Request a new Tor identity",
+        "context": "Send the NEWNYM signal to the Tor controller \"ctrl\" by calling \"ctrl.signal\" with \"stem.Signal.NEWNYM\" as the argument.",
+        "code_before": "import stem\nimport stem.control\n\nwith stem.control.Controller.from_port(port=9051) as ctrl:\n    ctrl.authenticate()\n    # Request a new circuit and exit node — new IP for subsequent connections\n",
+        "code_after": "\n    print(\"New identity requested\")",
+        "correct_answer": "ctrl.signal(stem.Signal.NEWNYM)"
+      },
+      {
+        "type": "concept",
+        "heading": "What Tor Does Not Hide",
+        "body": "Tor hides your IP from the destination and your traffic from your ISP. It does not hide the fact that you are using Tor — your ISP sees connections to Tor guard relays. Tor bridges and pluggable transports (obfs4, meek, Snowflake) obfuscate those connections to look like HTTPS or QUIC traffic.\n\nEnd-to-end timing correlation is Tor's known hard problem. If an adversary can observe both your entry into the Tor network and the traffic exiting toward the destination, traffic volume and timing patterns can link them with high probability. This is called a global passive adversary attack. No practical defense exists within the Tor model — it is a threat Tor explicitly does not protect against.\n\nOther leaks that break anonymity: browser fingerprinting (use Tor Browser, not a regular browser with a Tor proxy), WebRTC IP leaks, JavaScript that exfiltrates identifying information, logging into accounts linked to your real identity, and malware that bypasses the proxy entirely. Tor is a transport-layer tool; your anonymity is only as strong as the application layer sitting on top of it."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Authenticate the controller",
+        "context": "Authenticate to the Tor control port on the open controller object \"ctrl\" by calling \"ctrl.authenticate()\" with no arguments.",
+        "code_before": "import stem.control\n\nwith stem.control.Controller.from_port(port=9051) as ctrl:\n    # Must authenticate before sending any commands\n    # Uses cookie auth if configured in torrc\n",
+        "code_after": "\n    print(\"Authenticated — control port ready\")\n    print(ctrl.get_version())",
+        "correct_answer": "ctrl.authenticate()"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "An activist in a country that blocks Tor uses obfs4 bridges to connect. They route their traffic through Tor and access a protest coordination site via its .onion address. Their ISP is logging all traffic. A national intelligence agency subpoenas the ISP logs. What does the ISP's log reveal?",
+        "options": [
+          "Encrypted traffic to an obfs4 bridge address that does not obviously identify Tor usage. No destination addresses, no content, no .onion address — all hidden inside the tunnel.",
+          "The .onion address of the coordination site, since DNS queries must leave the device in cleartext.",
+          "The guard relay's IP and the approximate timing of each session, which enables traffic correlation.",
+          "Nothing — obfs4 encrypts metadata including source and destination IPs at the IP layer."
+        ],
+        "correct": 0,
+        "hint": "obfs4 is designed to make Tor traffic look like random noise. What does an observer who cannot break the cryptography see at the network layer, and what specifically are they missing compared to a direct connection?"
+      }
+    ]
+  },
+  "mod_op_2": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "MAC Addresses Are Loud",
+        "body": "Your network interface card has a MAC address burned into hardware — a 48-bit identifier that uniquely identifies the device on a local network segment. The first three bytes are the OUI: Organizationally Unique Identifier, assigned to manufacturers. See `AC:DE:48` and you know it is a Raspberry Pi. See `00:50:56` and you know it is a VMware VM. That OUI leakage alone fingerprints your device class before you have sent a useful packet.\n\nMore critically, MACs appear in every Ethernet frame and every Wi-Fi beacon probe request. Walk through an airport with Wi-Fi on and your device broadcasts its MAC while probing for known networks. For years this was the backbone of physical tracking systems in retail and city surveillance. Modern operating systems randomize MACs for probe requests — but only for probe requests, and only if the feature is on."
+      },
+      {
+        "type": "concept",
+        "heading": "Spoofing and Detection",
+        "body": "MAC spoofing replaces the software-visible MAC address with an arbitrary value. The burned-in hardware MAC is unchanged — it is just no longer what the NIC advertises. On Linux, `ip link set dev eth0 address XX:XX:XX:XX:XX:XX` does it in one command. On every major OS, the NIC driver reads the software override and uses it for all outgoing frames.\n\nSpoofing breaks naive MAC-based access control (only allow known MACs on the network) because you simply copy a trusted device's MAC. It does not defeat 802.1X port-based authentication, which uses cryptographic credentials, not MAC addresses.\n\nDetection techniques: OUI mismatch (a frame claims to be from a Cisco device but the OS fingerprint is Linux), duplicate MAC detection on managed switches (two ports reporting the same MAC triggers an alert), and DHCP fingerprinting (each OS sends a characteristic set of DHCP options that can be correlated against the claimed OUI). Changing your MAC is the first step; not generating fingerprints that contradict it is the harder part."
+      },
+      {
+        "type": "code",
+        "heading": "MAC spoofing on Linux",
+        "body": "The full workflow: bring the interface down, change the address, bring it back up. Wrapping it in Python gives you programmatic control.",
+        "code": "import subprocess\nimport re\n\ndef get_current_mac(interface):\n    \"\"\"Read the current MAC address from the interface.\"\"\"\n    result = subprocess.run(['ip', 'link', 'show', interface],\n                            capture_output=True, text=True)\n    match = re.search(r'link/ether ([0-9a-f:]{17})', result.stdout)\n    return match.group(1) if match else None\n\ndef spoof_mac(interface, new_mac):\n    \"\"\"Set a new MAC address on the interface.\"\"\"\n    subprocess.run(['ip', 'link', 'set', 'dev', interface, 'down'], check=True)\n    subprocess.run(['ip', 'link', 'set', 'dev', interface, 'address', new_mac], check=True)\n    subprocess.run(['ip', 'link', 'set', 'dev', interface, 'up'], check=True)\n\niface = 'eth0'\nprint(f\"Original MAC: {get_current_mac(iface)}\")\nspoof_mac(iface, '02:00:00:00:00:01')   # 02: prefix = locally administered\nprint(f\"Spoofed MAC:  {get_current_mac(iface)}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Bring interface down",
+        "context": "Run the command to bring interface \"interface\" down by calling \"subprocess.run\" with the list \"['ip', 'link', 'set', 'dev', interface, 'down']\" and \"check=True\".",
+        "code_before": "import subprocess\n\ninterface = 'eth0'\nnew_mac = '02:ab:cd:ef:12:34'\n\n# Interface must be down before changing the MAC address\n",
+        "code_after": "\nsubprocess.run(['ip', 'link', 'set', 'dev', interface, 'address', new_mac], check=True)\nsubprocess.run(['ip', 'link', 'set', 'dev', interface, 'up'], check=True)",
+        "correct_answer": "subprocess.run(['ip', 'link', 'set', 'dev', interface, 'down'], check=True)"
+      },
+      {
+        "type": "code",
+        "heading": "Fingerprinting with Scapy",
+        "body": "Passive OS fingerprinting reads packets that are already in flight — no active probes, no noise. TCP SYN packets carry enough information to identify the sender's OS with high confidence.",
+        "code": "from scapy.all import sniff, IP, TCP\n\n# Passive fingerprint signatures (simplified — real p0f database has thousands)\nFINGERPRINTS = {\n    (65535, 64, 1): 'Linux 4.x/5.x',\n    (65535, 128, 8): 'Windows 10/11',\n    (65535, 64, 3): 'macOS',\n    (8192,  128, 2): 'Windows XP/2003',\n}\n\ndef fingerprint_packet(pkt):\n    \"\"\"Extract TCP SYN fields used for OS fingerprinting.\"\"\"\n    if not (pkt.haslayer(IP) and pkt.haslayer(TCP)):\n        return\n    if pkt[TCP].flags != 0x02:          # Only SYN packets\n        return\n    window = pkt[TCP].window\n    ttl = pkt[IP].ttl\n    mss_opt = [o for o in pkt[TCP].options if o[0] == 'MSS']\n    mss = mss_opt[0][1] if mss_opt else 0\n    key = (window, ttl, len(pkt[TCP].options))\n    os_guess = FINGERPRINTS.get(key, f'Unknown (win={window} ttl={ttl})')\n    print(f\"{pkt[IP].src}:{pkt[TCP].sport} -> OS guess: {os_guess}\")\n\n# sniff(prn=fingerprint_packet, filter='tcp[tcpflags] == tcp-syn', count=20)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Filter for SYN packets",
+        "context": "Check whether a Scapy packet \"pkt\" has its TCP flags equal to \"0x02\" (SYN only) by writing the boolean expression \"pkt[TCP].flags == 0x02\".",
+        "code_before": "from scapy.all import IP, TCP\nfrom scapy.all import Ether, Raw\n\n# Simulate a raw SYN packet for testing\npkt = Ether()/IP(src='10.0.0.1')/TCP(flags='S', window=65535)\n\n# Only process SYN packets — flags 0x02 means SYN bit set, nothing else\nif ",
+        "code_after": ":\n    print(f\"SYN from {pkt[IP].src} window={pkt[TCP].window}\")",
+        "correct_answer": "pkt[TCP].flags == 0x02"
+      },
+      {
+        "type": "concept",
+        "heading": "Consistent Fingerprint",
+        "body": "MAC spoofing is one layer of a fingerprinting defense stack. An adversary with visibility into your traffic can correlate you via: TCP/IP stack fingerprint (Window size, TTL, TCP options), HTTP headers (User-Agent, Accept-Language, header order), browser fingerprint (canvas, WebGL, font enumeration, timezone), TLS fingerprint (JA3 hash from cipher suite and extension order), and traffic timing patterns.\n\nA coherent OPSEC posture means every layer tells the same story or no story at all. Spoofing a Cisco OUI while your TCP TTL is 64 (Linux) and your TLS JA3 matches Chrome on macOS is noisier than no spoofing at all. Either blend in completely — use common OS, common browser, common network hardware OUI — or use a clean VM on a network that does not link back to you, with a freshly generated identity at every layer.\n\nChanging MAC addresses is trivially scriptable. Changing your TCP stack behavior is not — it requires kernel patches or network-layer proxies. This is why adversaries who need strong anonymity use Tails (amnesic OS with fixed fingerprints) or Whonix (all traffic through Tor, VM-isolated) rather than manual spoofing."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Parse current MAC from output",
+        "context": "Extract the MAC address from \"output\" string using \"re.search\" with the pattern \"r'link/ether ([0-9a-f:]{17})'\" and call \".group(1)\" on the match object.",
+        "code_before": "import re\n\n# Simulated output from 'ip link show eth0'\noutput = \"2: eth0: <BROADCAST> mtu 1500\\n    link/ether ac:de:48:00:11:22 brd ff:ff:ff:ff:ff:ff\"\n\nmatch = re.search(r'link/ether ([0-9a-f:]{17})', output)\n",
+        "code_after": "\nprint(f\"Current MAC: {mac}\")",
+        "correct_answer": "mac = match.group(1)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You spoof your MAC to a locally-administered address (02:xx:xx:xx:xx:xx) and connect to a target's Wi-Fi. The network uses MAC filtering as its only access control. You are denied. The administrator's laptop is on the network. What is the most direct fix and why does 802.1X stop this approach entirely?",
+        "options": [
+          "Clone the administrator's MAC (visible in ARP traffic or Wi-Fi frames) to pass the MAC filter. 802.1X stops this because it requires a cryptographic credential (certificate or EAP credential) per device, which is not cloneable by observing frames.",
+          "Use a random OUI from a common manufacturer. 802.1X stops this because it blocks locally-administered MACs at the switch level.",
+          "Deauth the administrator to force a MAC rotation and claim their temporary address. 802.1X stops this because clients must re-authenticate after deauth.",
+          "Flood the MAC table to cause the switch to fail open. 802.1X stops this because it operates at Layer 3, above MAC flooding."
+        ],
+        "correct": 0,
+        "hint": "MAC filtering checks a value you can read off the wire. What does 802.1X check instead that you cannot obtain just by watching traffic?"
+      }
+    ]
+  },
+  "mod_op_3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Blast Radius Reduction",
+        "body": "Compartmentalization is the OPSEC principle of ensuring that a compromise in one area cannot spread to others. In the physical world it is why submarines have bulkheads. In operations security it is why you do not use your daily driver laptop to run a pentest, do not log into personal accounts from an operation's network, and do not reuse usernames, personas, or infrastructure across engagements.\n\nThe practical question is always: if this thing is compromised, what else does the attacker learn? If the answer is 'my real identity' or 'all my other operations,' the compartmentalization has failed. If the answer is 'nothing beyond this isolated context,' it has succeeded. Every OPSEC decision is just applying that question recursively until the blast radius is acceptable."
+      },
+      {
+        "type": "concept",
+        "heading": "VM Isolation Models",
+        "body": "A virtual machine is the technical implementation of a compartment. Three models matter here. Type 1 hypervisor (bare metal): VMware ESXi, Xen — the hypervisor runs directly on hardware, VMs are tenants. Maximum isolation but requires dedicated hardware. Type 2 hypervisor (hosted): VirtualBox, VMware Workstation, Parallels — the hypervisor runs inside a host OS. Convenient but the host OS is part of the attack surface.\n\nWhonix splits the compartment into two VMs: a Gateway that routes all traffic through Tor, and a Workstation that has no direct network access — all traffic must flow through the Gateway. Compromise the Workstation and an attacker gets that context; they still cannot reach the real IP because the workstation has no route to the internet except through the Gateway's Tor circuit. Tails is the amnesic alternative: runs entirely in RAM from a USB drive, leaves no persistent state on any disk.\n\nVM escape vulnerabilities exist — CVEs in hypervisor emulated hardware components are the classic path. The assumption that VM isolation is absolute is incorrect. Layer it with network isolation (host-only adapters, no bridged networking), clean snapshots, and encrypted VM images."
+      },
+      {
+        "type": "code",
+        "heading": "Automated VM snapshot workflow",
+        "body": "Snapshots are the undo button for operations. This shows the vboxmanage CLI wrapped in Python for programmatic snapshot management — take before, revert after.",
+        "code": "import subprocess\nimport datetime\n\nVM_NAME = \"kali-ops\"          # VirtualBox VM name\n\ndef vbox(args):\n    \"\"\"Run a VBoxManage command and return stdout.\"\"\"\n    result = subprocess.run(['VBoxManage'] + args,\n                            capture_output=True, text=True, check=True)\n    return result.stdout.strip()\n\ndef snapshot_take(vm, name):\n    \"\"\"Take a named snapshot of a running or stopped VM.\"\"\"\n    vbox(['snapshot', vm, 'take', name, '--description', 'auto pre-op snapshot'])\n    print(f\"Snapshot '{name}' taken\")\n\ndef snapshot_restore(vm, name):\n    \"\"\"Restore VM to a named snapshot — VM must be powered off first.\"\"\"\n    vbox(['controlvm', vm, 'poweroff'])      # Force power off\n    vbox(['snapshot', vm, 'restore', name])\n    vbox(['startvm', vm, '--type', 'headless'])\n    print(f\"VM restored to '{name}' and restarted\")\n\nts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')\nsnapshot_take(VM_NAME, f\"pre_op_{ts}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Build a timestamped snapshot name",
+        "context": "Create a timestamp string by calling \"datetime.datetime.now().strftime\" with the format string \"'%Y%m%d_%H%M%S'\", assigning to \"ts\".",
+        "code_before": "import datetime\n\n# Timestamp format: YYYYMMDD_HHMMSS — sortable, unique, human-readable\n",
+        "code_after": "\nsnapshot_name = f\"pre_op_{ts}\"\nprint(snapshot_name)  # e.g. pre_op_20260517_143022",
+        "correct_answer": "ts = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')"
+      },
+      {
+        "type": "code",
+        "heading": "Infrastructure compartmentalization",
+        "body": "Each operation gets its own cloud infrastructure, paid for with methods that do not link back to your real identity, spun up fresh and destroyed after. This script audits what is running so nothing is left up.",
+        "code": "import subprocess\nimport json\n\ndef list_aws_instances(region='us-east-1'):\n    \"\"\"List all running EC2 instances in a region.\"\"\"\n    result = subprocess.run([\n        'aws', 'ec2', 'describe-instances',\n        '--region', region,\n        '--filters', 'Name=instance-state-name,Values=running',\n        '--query', 'Reservations[*].Instances[*].[InstanceId,PublicIpAddress,Tags]',\n        '--output', 'json'\n    ], capture_output=True, text=True, check=True)\n    instances = json.loads(result.stdout)\n    for reservation in instances:\n        for inst in reservation:\n            iid, ip, tags = inst[0], inst[1], inst[2] or []\n            name = next((t['Value'] for t in tags if t['Key'] == 'Name'), 'unnamed')\n            print(f\"  {iid}  {ip}  [{name}]\")\n\nprint(\"Running EC2 instances (should be zero between ops):\")\nlist_aws_instances()"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Parse JSON from subprocess",
+        "context": "Parse the JSON string stored in \"result.stdout\" by calling \"json.loads\" on it, assigning to \"instances\".",
+        "code_before": "import json\n\n# Simulated AWS CLI output\nresult_stdout = '[[\"i-0123456789\", \"1.2.3.4\", [{\"Key\": \"Name\", \"Value\": \"op-server\"}]]]'\n\n# Deserialize the AWS CLI JSON response\n",
+        "code_after": "\nfor inst in instances:\n    print(inst[0], inst[1])",
+        "correct_answer": "instances = json.loads(result_stdout)"
+      },
+      {
+        "type": "concept",
+        "heading": "Persona and Attribution",
+        "body": "Technical compartmentalization is necessary but not sufficient. Attribution chains through identifiers you did not think to protect. The classic failures: logging into a personal email once from an ops VM, reusing a username or writing style across personas, buying infrastructure with a payment method linked to your identity, and forgetting that metadata — EXIF data in images, document author fields, timezone in filenames — travels with files you send.\n\nA mature persona is built from the start with operational hygiene: separate hardware or fully isolated VM, dedicated accounts created over Tor or a VPN not linked to you, communication through that persona only from that isolated environment, and clear protocols for what the persona knows versus what you know. The persona and your real identity should never be in the same context simultaneously.\n\nFor red team operations specifically: C2 infrastructure should be behind redirectors that terminate at expendable cloud instances, with domain fronting or CDN proxying to hide the true C2 IP. If a defender discovers a redirector and burns it, the core C2 infrastructure is untouched. The redirector knows nothing about the backend — it is just a proxy. That is compartmentalization applied to infrastructure."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Power off a VM",
+        "context": "Issue the VBoxManage power off command for the VM named \"VM_NAME\" by calling \"vbox\" with the list \"['controlvm', VM_NAME, 'poweroff']\".",
+        "code_before": "import subprocess\n\nVM_NAME = \"kali-ops\"\n\ndef vbox(args):\n    result = subprocess.run(['VBoxManage'] + args,\n                            capture_output=True, text=True, check=True)\n    return result.stdout.strip()\n\n# Must power off before restoring a snapshot\n",
+        "code_after": "\nvbox(['snapshot', VM_NAME, 'restore', 'pre_op_clean'])\nprint(\"VM restored to clean state\")",
+        "correct_answer": "vbox(['controlvm', VM_NAME, 'poweroff'])"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "A red teamer runs all operations from a dedicated Kali VM with no persistent storage, routing all traffic through a Whonix Gateway. They accidentally open a personal Gmail tab inside the Kali VM to check something quickly, then close it and continue the operation. What is the immediate OPSEC failure and what is the correct recovery procedure?",
+        "options": [
+          "Google's login event linked the real identity to the VM's Tor exit IP and session timing, potentially correlating the real identity with the operation. The VM should be rolled back to the pre-operation snapshot immediately and the current session abandoned.",
+          "No failure — the Whonix Gateway hides the Tor exit IP from Google, so the login is anonymous.",
+          "The failure is using Gmail at all. The fix is to close the tab and continue; the Tor circuit change every 10 minutes severs any link.",
+          "The failure is that Gmail loaded over Tor, which is rate-limited and creates abnormal timing. The fix is to whitelist Gmail in the Whonix firewall."
+        ],
+        "correct": 0,
+        "hint": "A Google login does not just record an IP. What else does Google know about that account, and what has now been associated with the operational session's timing and behavioral fingerprint?"
+      }
+    ]
+  }
+}

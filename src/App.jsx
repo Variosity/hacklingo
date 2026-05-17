@@ -6581,9 +6581,26 @@ function OperatorScreen({
               borderRadius: 4,
               cursor: "pointer",
               fontFamily: "monospace",
+              marginBottom: 8,
             }}
           >
             FORCE SUPPORTER STATUS
+          </button>
+          <button
+            onClick={() => onAdminAction("reset")}
+            style={{
+              width: "100%",
+              padding: 10,
+              background: "transparent",
+              color: "#ef4444",
+              fontWeight: "bold",
+              border: "1px dashed #ef4444",
+              borderRadius: 4,
+              cursor: "pointer",
+              fontFamily: "monospace",
+            }}
+          >
+            ⚠ WIPE ALL STATS (FRESH START)
           </button>
         </div>
       )}
@@ -6639,6 +6656,28 @@ function DynamicLessonScreen({
       const MAX_RETRIES = 1;
       try {
         setLoading(true);
+
+        // ── CACHE-FIRST: read manually-curated lesson directly from Supabase.
+        // If the module is seeded into lesson_cache (cache_key = module.id),
+        // we load it instantly and never touch the AI endpoint.
+        // Falls through to AI generation only if nothing is cached.
+        if (attempt === 0 && lessonMeta?.id) {
+          try {
+            const { data: cached } = await supabase
+              .from("lesson_cache")
+              .select("steps")
+              .eq("cache_key", lessonMeta.id)
+              .maybeSingle();
+            if (cached?.steps && isValidLesson(cached.steps)) {
+              setContent(cached.steps);
+              setLoading(false);
+              return;
+            }
+          } catch (e) {
+            console.warn("Cache lookup failed, falling back to AI:", e);
+          }
+        }
+
         const {
           data: { session },
         } = await supabase.auth.getSession();
@@ -6655,6 +6694,7 @@ function DynamicLessonScreen({
             Accept: "application/json",
           },
           body: JSON.stringify({
+            moduleId: lessonMeta.id,
             moduleTitle: lessonMeta.title,
             moduleType: lessonMeta.type,
             userLevel: getRank(userState.xp).name,
@@ -6666,42 +6706,53 @@ function DynamicLessonScreen({
           let errDetail = `HTTP ${response.status}`;
           try {
             const j = await response.json();
-            errDetail = (typeof j.error === "string" ? j.error : JSON.stringify(j.error)) || errDetail;
+            errDetail =
+              (typeof j.error === "string"
+                ? j.error
+                : JSON.stringify(j.error)) || errDetail;
           } catch (_) {}
-          throw new Error(`Uplink rejected: ${errDetail}`);
+          // Throw the exact message from our endpoint
+          throw new Error(errDetail);
         }
         const generatedContent = await response.json();
 
         if (!isValidLesson(generatedContent)) {
           if (attempt < MAX_RETRIES) {
-            console.warn(
-              `Lesson validation failed (got ${
-                Array.isArray(generatedContent) ? generatedContent.length : 0
-              } steps) — retrying...`,
-            );
+            console.warn(`Lesson validation failed — retrying...`);
             return fetchLesson(attempt + 1);
           }
-          throw new Error(
-            "Briefing came back corrupted (network blip during generation). Try again.",
-          );
+          throw new Error("Briefing came back corrupted. Try again.");
         }
 
         setContent(generatedContent);
       } catch (err) {
         console.error("Lesson Gen Error:", err);
-        const errMsg = err instanceof Error ? err.message : (typeof err === "string" ? err : JSON.stringify(err));
+        const errMsg =
+          err instanceof Error
+            ? err.message
+            : typeof err === "string"
+              ? err
+              : JSON.stringify(err);
         setErrorMsg(errMsg);
+
+        // Detect our custom "Under Construction" string
+        const isUnderConstruction = errMsg.includes("hasn't been built");
+
         setContent([
           {
             type: "concept",
-            heading: "Transmission Failed",
-            body: "Could not connect to the Instructor AI. " + errMsg,
+            heading: isUnderConstruction
+              ? "Under Construction 🚧"
+              : "Transmission Failed",
+            body: isUnderConstruction
+              ? errMsg
+              : "Could not connect to the Instructor AI. " + errMsg,
           },
           {
             type: "quiz",
             heading: "Diagnostics",
-            question: "Acknowledge failure?",
-            options: ["Yes"],
+            question: "Acknowledge status?",
+            options: ["Return to Hub"],
             correct: 0,
           },
         ]);
@@ -6881,6 +6932,8 @@ function DynamicLessonScreen({
                 padding: 16,
                 fontFamily: "monospace",
                 fontSize: 13,
+                overflow: "hidden",
+                wordBreak: "break-all",
               }}
             >
               <div
@@ -6888,6 +6941,8 @@ function DynamicLessonScreen({
                   color: "#888",
                   whiteSpace: "pre-wrap",
                   marginBottom: 8,
+                  overflowX: "auto",
+                  wordBreak: "break-all",
                 }}
               >
                 {current.code_before}
@@ -6903,6 +6958,7 @@ function DynamicLessonScreen({
                 autoCorrect="off"
                 style={{
                   width: "100%",
+                  boxSizing: "border-box",
                   minWidth: 0,
                   padding: "10px",
                   background: "rgba(0,0,0,0.5)",
@@ -6916,13 +6972,13 @@ function DynamicLessonScreen({
                   resize: "vertical",
                   minHeight: 44,
                   maxHeight: 200,
-                  whiteSpace: "pre",
-                  overflowWrap: "normal",
-                  overflowX: "auto",
+                  whiteSpace: "pre-wrap",
+                  overflowWrap: "break-word",
+                  overflowX: "hidden",
                 }}
               />
               <div
-                style={{ color: "#888", whiteSpace: "pre-wrap", marginTop: 8 }}
+                style={{ color: "#888", whiteSpace: "pre-wrap", marginTop: 8, overflowX: "auto", wordBreak: "break-all" }}
               >
                 {current.code_after}
               </div>
@@ -6990,8 +7046,8 @@ function DynamicLessonScreen({
                 const correctIdx = parseInt(current.correct, 10);
                 const isDisabledWrong = disabledOptions.includes(i);
                 const isFinalized =
-                  answered &&
-                  (selectedOption === correctIdx || answerForcedReveal);
+                  (answered && (selectedOption === correctIdx || answerForcedReveal)) ||
+                  wrongAttempts >= 3;
                 let bg = theme.surface,
                   border = "1px solid #333",
                   color = theme.text;
@@ -7990,6 +8046,41 @@ export default function App() {
     } else if (type === "supporter") {
       setUserState({ ...userState, is_supporter: true });
       await updateProfile({ is_supporter: true });
+    } else if (type === "reset") {
+      if (!window.confirm("WIPE all stats for this account? This cannot be undone.")) return;
+      const resetFields = {
+        xp: 0,
+        hashes: 0,
+        threads: 22,
+        persistence_streak: 0,
+        burner_phones: 0,
+        overclock_tokens: 0,
+        streak_restores: 0,
+        completed_modules: [],
+        unlocked_achievements: [],
+        unlocked_themes: ["default"],
+        active_theme: "default",
+        last_active_date: null,
+        last_reward: null,
+        last_bonus_date: "",
+        referral_count: 0,
+        onboarding_completed: false,
+        streak_broken_dates: [],
+      };
+      // Admin bypasses RLS via updateProfile (which uses the authenticated client —
+      // make sure your Supabase RLS policy allows admins to update all own fields,
+      // or run the SQL below to grant it).
+      const { error } = await supabase
+        .from("profiles")
+        .update(resetFields)
+        .eq("id", userState.id);
+      if (error) {
+        alert("Reset failed: " + error.message);
+        return;
+      }
+      setUserState({ ...userState, ...resetFields, completedModules: [] });
+      setThreadWarning("🔄 STATS WIPED — account reset to zero");
+      setTimeout(() => setThreadWarning(""), 3500);
     }
   };
 

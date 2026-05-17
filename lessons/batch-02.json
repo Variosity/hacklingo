@@ -1,0 +1,342 @@
+{
+"m0-6": {
+"steps": [
+{
+"type": "concept",
+"heading": "The OS Sticky Notes",
+"body": "Environment variables are like sticky notes you leave for the operating system. They store dynamic values—like your home directory, your current user, or API keys—that programs can read to figure out how they should behave without needing hardcoded paths.\n\nIn security, these variables are a goldmine. If an attacker can read your environment, they might steal cloud credentials. If they can write to it, they can manipulate how system utilities execute, turning ordinary commands into malicious hooks."
+},
+{
+"type": "concept",
+"heading": "The Mighty PATH",
+"body": "The most important variable is `PATH`. When you type `ls` or `python` into the terminal, the OS doesn't inherently know where those programs live. It reads the `PATH` variable—a colon-separated list of directories—and checks them from left to right until it finds a matching executable.\n\nIf you control the `PATH`, you control execution. If you place a malicious script named `ls` in a directory that gets checked *before* `/usr/bin/`, the user will execute your malware instead of listing their files. This is called PATH hijacking."
+},
+{
+"type": "code",
+"heading": "Setting and Exporting",
+"body": "Let's see how Bash handles these variables natively. We define them, export them so sub-processes can see them, and read them.",
+"code": "#!/bin/bash\n# Defining a local variable (only available in this specific script run)\nTARGET_IP="10.10.10.50"\n\n# Exporting makes it an environment variable available to child processes\nexport API_TOKEN="super_secret_xyz123"\n\n# We read variables by prefixing them with a dollar sign\necho "[*] Target is set to: $TARGET_IP"\n\n# Let's look at the default PATH\necho "[*] Current search path: $PATH""
+},
+{
+"type": "code_practice",
+"heading": "Export a Variable",
+"context": "Use the "export" keyword to make `AWS_KEY` available to child processes.",
+"code_before": "# Set the AWS Key environment variable\n",
+"code_after": " AWS_KEY="AKIAIOSFODNN7EXAMPLE"",
+"correct_answer": "export"
+},
+{
+"type": "code",
+"heading": "Hijacking the PATH",
+"body": "Here is exactly how an attacker persists on a system or escalates privileges by abusing the PATH search order.",
+"code": "#!/bin/bash\n# Assume we have write access to /tmp\n\n# 1. Create a malicious script named exactly like a system utility\necho '#!/bin/bash\n/bin/bash -p' > /tmp/ping\nchmod +x /tmp/ping\n\n# 2. Modify the PATH to check /tmp FIRST\n# By prepending /tmp, the OS finds our fake 'ping' before /bin/ping\nexport PATH="/tmp:$PATH"\n\n# 3. Now, when a user or script calls 'ping', it runs our payload\necho "[*] Try running ping now...""
+},
+{
+"type": "code_practice",
+"heading": "Append to PATH",
+"context": "Update the `PATH` variable to include `/opt/tools` at the end by appending the existing "$PATH" variable.",
+"code_before": "# Add a custom tools directory to the end of the search path\nexport PATH="",
+"code_after": ":/opt/tools"",
+"correct_answer": "$PATH"
+},
+{
+"type": "concept",
+"heading": "The Relative Path Trap",
+"body": "A classic privilege escalation vector involves SUID binaries. These are programs owned by `root` that execute with root privileges, even when run by a normal user.\n\nIf a poorly written SUID binary calls a command using a relative path (e.g., calling `curl` instead of `/usr/bin/curl`), it relies on the user's `PATH`. An attacker can alter their own `PATH`, point it to a fake `curl` that spawns a root shell, and execute the SUID binary. Game over."
+},
+{
+"type": "code_practice",
+"heading": "Create Fake Utility",
+"context": "Write a payload into a file named "cat" inside the `/tmp` directory using redirection `>`.",
+"code_before": "# Creating the malicious executable for our PATH hijack\necho '#!/bin/bash' > /tmp/cat\necho '/bin/bash -p' >> /tmp/",
+"code_after": "\nchmod +x /tmp/cat",
+"correct_answer": "cat"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "An attacker finds an SUID binary that contains the command `system(\"date\");`. The attacker sets `export PATH=\"/tmp:$PATH\"` and creates a malicious executable in `/tmp`. What must the malicious executable be named to achieve privilege escalation?",
+"options": [
+"system",
+"date",
+"root",
+"bash"
+],
+"correct": 1,
+"hint": "The SUID binary is asking the OS to find a specific program based on a relative name."
+}
+]
+},
+"m1-1": {
+"steps": [
+{
+"type": "concept",
+"heading": "Plates vs. Warehouses",
+"body": "Programs need memory to run. The OS provides two main areas: the Stack and the Heap. \n\nThe Stack is like a stack of plates. It's perfectly ordered, automatically managed, and extremely fast. When a function is called, a new plate (stack frame) is added. When the function finishes, the plate is removed. The Heap is a messy warehouse. You can request any size of space at any time, but you have to manually track where things are and remember to clean them up."
+},
+{
+"type": "concept",
+"heading": "Lifespans and Scope",
+"body": "Stack variables only exist while their enclosing function is running. If you try to use a pointer to a stack variable after its function returns, you'll read garbage data. \n\nHeap variables exist until you explicitly destroy them. In C, you ask for heap space using `malloc()` and give it back using `free()`. Because humans are terrible at memory management, this manual process creates the majority of critical memory corruption vulnerabilities in software."
+},
+{
+"type": "code",
+"heading": "Allocating Memory",
+"body": "Here we declare a variable automatically on the stack, and request memory dynamically on the heap.",
+"code": "#include <stdio.h>\n#include <stdlib.h> // Required for malloc and free\n\nvoid memory_demo() {\n    // Stack allocation: Automatic, fixed size, dies with the function\n    int stack_var = 1337;\n    \n    // Heap allocation: Dynamic, manual, persists until freed\n    // We ask for exactly enough bytes to hold an integer\n    int *heap_var = (int *)malloc(sizeof(int));\n    \n    if (heap_var != NULL) {\n        *heap_var = 1337;\n        printf("Stack: %d, Heap: %d\n", stack_var, *heap_var);\n    }\n}"
+},
+{
+"type": "code_practice",
+"heading": "Request Heap Space",
+"context": "Use the "malloc" function to request 64 bytes of heap memory.",
+"code_before": "#include <stdlib.h>\n\nvoid setup_buffer() {\n    char *buffer = (char *)",
+"code_after": "(64);\n}",
+"correct_answer": "malloc"
+},
+{
+"type": "code",
+"heading": "The Freeing Ritual",
+"body": "If you don't free heap memory, you create a memory leak. If you free it but keep using the pointer, you create a Use-After-Free (UAF) vulnerability.",
+"code": "#include <stdlib.h>\n#include <string.h>\n\nvoid handle_user() {\n    // Allocate 100 bytes for a username\n    char *user = (char *)malloc(100);\n    strcpy(user, "admin");\n    \n    // We are done with the user object, we must return the memory to the OS\n    free(user);\n    \n    // DANGER: The pointer 'user' still holds the memory address!\n    // It is now a 'dangling pointer'. \n    // If we write to it now, it's a Use-After-Free bug.\n    // user[0] = 'A'; // This would be exploitable.\n}"
+},
+{
+"type": "code_practice",
+"heading": "Clean Up Memory",
+"context": "Use the "free" function to release the memory pointed to by `payload_buffer`.",
+"code_before": "char *payload_buffer = malloc(256);\n// ... use the buffer ...\n\n// Clean up\n",
+"code_after": "(payload_buffer);",
+"correct_answer": "free"
+},
+{
+"type": "concept",
+"heading": "The Hacker's Canvas",
+"body": "Why do we care? Because the Stack and the Heap have different exploit primitives. \n\nThe Stack holds function return addresses. Overwriting a stack buffer lets you hijack control flow directly. The Heap holds dynamic objects and metadata. Exploiting the heap involves corrupting the invisible data structures `malloc` uses to track memory, tricking the OS into handing the attacker a pointer to a sensitive area of memory."
+},
+{
+"type": "code_practice",
+"heading": "Stack Buffer",
+"context": "Declare a character array on the stack named "local_buf" with a size of 128.",
+"code_before": "void vulnerable_func() {\n    // This is a fixed-size stack allocation\n    char ",
+"code_after": "[128];\n    // ...\n}",
+"correct_answer": "local_buf"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "A developer returns a pointer to a local variable from inside a function to the main program. Why is this a serious bug?",
+"options": [
+"The compiler will crash during linking.",
+"The memory is on the heap and requires a password to access.",
+"The memory is on the stack and is destroyed when the function returns.",
+"The pointer will automatically be converted to a string."
+],
+"correct": 2,
+"hint": "Local variables only exist during the lifespan of their specific function frame."
+}
+]
+},
+"m1-2": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Great Illusion",
+"body": "C is a high-level language. It has `if` statements, loops, and variables. The CPU understands absolutely none of this. The CPU only understands electrical pulses, represented as raw binary opcodes.\n\nCompilation is the translation pipeline that bridges this gap. It strips away all human context—your clever variable names, your comments, your logic structures—and turns it into brutal, literal machine instructions."
+},
+{
+"type": "concept",
+"heading": "The Four Stages",
+"body": "The pipeline has four steps. \n1. Preprocessor: Expands macros and includes header files.\n2. Compiler: Translates C code into Assembly language.\n3. Assembler: Translates Assembly into raw binary object files.\n4. Linker: Stitches your object files together with system libraries (like `libc`) to create the final executable.\n\nWhen reverse-engineering malware, you start at step 4 and try to mentally reconstruct step 2. You will never get back to step 1."
+},
+{
+"type": "code",
+"heading": "Watching the Compiler",
+"body": "We can ask GCC (the GNU C Compiler) to stop halfway through the pipeline so we can read the generated assembly.",
+"code": "// A simple C file named main.c\nint add(int a, int b) {\n    return a + b;\n}\n\nint main() {\n    add(5, 10);\n    return 0;\n}\n\n// We compile this to assembly using the -S flag\n// Command: gcc -O0 -S main.c -o main.s\n// -O0 means "zero optimization" (keeps code readable for us)\n// -S means "stop after compiling, don't assemble""
+},
+{
+"type": "code_practice",
+"heading": "Specify Output",
+"context": "Use the "-o" flag to specify the output filename as `malware.bin`.",
+"code_before": "# Compile payload.c into an executable binary\ngcc payload.c ",
+"code_after": " malware.bin",
+"correct_answer": "-o"
+},
+{
+"type": "code",
+"heading": "Static vs Dynamic",
+"body": "By default, the Linker dynamically links libraries. It leaves a 'pointer' in your binary to the system's `libc`. Static linking copies the entire library *into* your binary.",
+"code": "// Standard compile (Dynamic Linking)\n// Small file size. Fails if the target system lacks the exact libraries.\n// gcc payload.c -o payload_dynamic\n\n// Static compile (Static Linking)\n// Massive file size. The entire C standard library is baked inside.\n// Runs anywhere, regardless of the target OS environment.\n// gcc payload.c -static -o payload_static\n\n// Malware authors often use static linking to ensure their implants\n// run perfectly on older or misconfigured Linux targets."
+},
+{
+"type": "code_practice",
+"heading": "Stop at Assembly",
+"context": "Use the "-S" flag to tell GCC to generate assembly code instead of a finished binary.",
+"code_before": "# Generate raw assembly to inspect the compiler's behavior\ngcc -O2 ",
+"code_after": " exploit.c",
+"correct_answer": "-S"
+},
+{
+"type": "concept",
+"heading": "Stripping the Binaries",
+"body": "Even after compiling, a binary usually contains a 'symbol table'. This table maps memory addresses back to original function names (e.g., `main`, `add_user`, `encrypt_files`) to help with debugging.\n\nMalware authors immediately run a tool called `strip` on their binaries. This permanently deletes the symbol table. When a security researcher loads a stripped binary into Ghidra, they don't see `encrypt_files()`; they just see `sub_4010a0()`. It makes analysis a nightmare."
+},
+{
+"type": "code_practice",
+"heading": "Strip Symbols",
+"context": "Use the "strip" command on the `implant.elf` binary to remove all debugging symbols.",
+"code_before": "# Remove human-readable symbols to hinder reverse engineering\n",
+"code_after": " implant.elf",
+"correct_answer": "strip"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You capture a 2MB Linux binary that executes a reverse shell. It does not require any external dependencies to run on a brand-new system. How was it likely compiled?",
+"options": [
+"Compiled dynamically, relying on the target's libc.",
+"Compiled statically, baking all dependencies inside.",
+"Interpreted directly by the Bash shell.",
+"Compiled with the -S flag to generate assembly."
+],
+"correct": 1,
+"hint": "Dynamic binaries are small and rely on the host system. Static binaries are large and self-sufficient."
+}
+]
+},
+"m1-3": {
+"steps": [
+{
+"type": "concept",
+"heading": "Hands and the Desk",
+"body": "Assembly language is just human-readable machine code. To read it, you must understand the CPU's architecture.\n\nImagine the CPU has a few tiny, extremely fast hands called Registers. The main system RAM is a massive desk across the room. The CPU cannot add two numbers sitting on the desk. It must walk over, pick up the numbers, hold them in its hands (Registers), add them together, and then write the result back to the desk (Memory)."
+},
+{
+"type": "concept",
+"heading": "The Core Registers",
+"body": "In x64 architecture, registers hold 64 bits (8 bytes) of data. They have specific names. `RAX` is the accumulator, often used for math and holding function return values. `RBX` is a base register. `RCX` is a counter.\n\nThe most important instruction is `MOV`. Despite its name, it doesn't 'move' data; it copies it. `MOV RAX, RBX` means 'Copy the value inside RBX and put it into RAX'."
+},
+{
+"type": "code",
+"heading": "Moving and Adding",
+"body": "Let's look at the Intel syntax for basic arithmetic. The format is generally `Instruction Destination, Source`.",
+"code": "global _start\n\nsection .text\n_start:\n    ; Move the literal number 5 into the RAX register\n    mov rax, 5      \n    \n    ; Move the literal number 10 into the RBX register\n    mov rbx, 10     \n    \n    ; Add the source (rbx) to the destination (rax)\n    ; RAX now contains 15. RBX still contains 10.\n    add rax, rbx    \n    \n    ; Copy the result from RAX into RCX\n    mov rcx, rax"
+},
+{
+"type": "code_practice",
+"heading": "The Copy Instruction",
+"context": "Use the "mov" instruction to copy the value 0x41 into the RDX register.",
+"code_before": "; Load the hex value for 'A' into the data register\n",
+"code_after": " rdx, 0x41",
+"correct_answer": "mov"
+},
+{
+"type": "code",
+"heading": "The Hardware Stack",
+"body": "The CPU uses memory for temporary storage via the Stack. We `PUSH` values onto the top of the stack, and `POP` them off.",
+"code": "section .text\n    ; Assume RAX contains an important memory address\n    mov rax, 0xdeadbeef\n    \n    ; We need to use RAX for something else, so we save its value to the Stack\n    push rax\n    \n    ; Now we can safely overwrite RAX\n    mov rax, 0x1337\n    \n    ; When we are done, we retrieve our saved value from the Stack\n    ; The stack is Last-In-First-Out (LIFO)\n    pop rax\n    ; RAX is now 0xdeadbeef again"
+},
+{
+"type": "code_practice",
+"heading": "Save to Stack",
+"context": "Use the "push" instruction to save the value of the RCX register onto the stack.",
+"code_before": "; Save the loop counter before making a function call\n",
+"code_after": " rcx",
+"correct_answer": "push"
+},
+{
+"type": "concept",
+"heading": "Control Flow and Jumps",
+"body": "There are no `if` statements in Assembly. Instead, we have `CMP` (compare) and Jumps. \n\n`CMP RAX, RBX` subtracts RBX from RAX invisibly and sets a hardware flag based on the result. We then use conditional jumps like `JE` (Jump if Equal) or `JNE` (Jump if Not Equal) to redirect execution to a different memory address if the flag is set. This is how the CPU physically routes logic."
+},
+{
+"type": "code_practice",
+"heading": "Unconditional Jump",
+"context": "Use the "jmp" instruction to unconditionally jump to the label named `exploit_payload`.",
+"code_before": "; Bypass the antivirus check entirely\n",
+"code_after": " exploit_payload",
+"correct_answer": "jmp"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Read the following sequence:\n`mov rax, 5`\n`push rax`\n`mov rbx, 10`\n`pop rbx`\nWhat is the final value held in the RBX register?",
+"options": [
+"5",
+"10",
+"15",
+"0"
+],
+"correct": 0,
+"hint": "Follow the data. RAX gets 5, 5 goes on the stack. RBX gets 10, but then it pops the top of the stack into itself."
+}
+]
+},
+"m1-4": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Pint Glass",
+"body": "A buffer overflow is exactly what it sounds like. You have a container (a buffer) designed to hold a specific amount of data. If you pour too much data into it, the excess spills over the edges.\n\nIn C, variables on the stack are placed directly next to each other. If you pour 100 bytes of data into a 50-byte character array, those extra 50 bytes don't disappear. They crush whatever variables are physically sitting next to the array in memory, overwriting their values."
+},
+{
+"type": "concept",
+"heading": "Thestrcpy Assassin",
+"body": "The classic culprit is `strcpy()` (string copy). This function copies data from a source to a destination until it hits a 'null terminator' (a zero byte `\\x00`). \n\nCrucially, `strcpy()` never checks if the destination buffer is actually big enough to hold the source data. It just blindly copies. If user input controls the source data, the attacker can supply a massive string and overwrite adjacent memory—including authentication flags or function return addresses."
+},
+{
+"type": "code",
+"heading": "The Vulnerable Check",
+"body": "Here is a classic, simplified buffer overflow scenario where a local variable dictates administrative access.",
+"code": "#include <stdio.h>\n#include <string.h>\n\nvoid check_auth(char *user_input) {\n    // The stack frame lays these variables out next to each other\n    int is_admin = 0;\n    char password_buffer[16];\n    \n    // VULNERABILITY: strcpy does not check the bounds of password_buffer\n    // If user_input is > 16 chars, it bleeds into is_admin\n    strcpy(password_buffer, user_input);\n    \n    if (strcmp(password_buffer, "secret123") == 0) {\n        is_admin = 1;\n    }\n    \n    if (is_admin != 0) {\n        printf("Access Granted. Here is the root shell.\n");\n    }\n}"
+},
+{
+"type": "code_practice",
+"heading": "Define Buffer Limit",
+"context": "Declare the size of `username_buf` to be exactly "32" characters.",
+"code_before": "void login(char *input) {\n    // Fixed size buffer on the stack\n    char username_buf[",
+"code_after": "];\n    strcpy(username_buf, input);\n}",
+"correct_answer": "32"
+},
+{
+"type": "code",
+"heading": "Crafting the Overflow",
+"body": "To exploit this, we don't try to guess the password. We provide a string so long that it overflows the buffer and flips the `is_admin` integer to a non-zero value.",
+"code": "#include <stdio.h>\n#include <string.h>\n\nint main() {\n    // The buffer is 16 bytes. \n    // We provide 16 bytes of garbage ('A') to fill the buffer completely.\n    // We add an extra byte ('B') which overflows INTO the is_admin variable.\n    // 'B' in hex is 0x42. is_admin is now 66 (non-zero), granting access.\n    \n    char malicious_payload[] = "AAAAAAAAAAAAAAAA" "B";\n    \n    printf("[*] Firing payload: %s\n", malicious_payload);\n    \n    // Calling the vulnerable function from the previous step\n    // check_auth(malicious_payload); \n    \n    return 0;\n}"
+},
+{
+"type": "code_practice",
+"heading": "The Blind Copy",
+"context": "Use the highly dangerous "strcpy" function to copy `argv[1]` into the `local_buf`.",
+"code_before": "int main(int argc, char *argv[]) {\n    char local_buf[64];\n    // Blindly copy user input into the local buffer\n    ",
+"code_after": "(local_buf, argv[1]);\n    return 0;\n}",
+"correct_answer": "strcpy"
+},
+{
+"type": "concept",
+"heading": "Mitigations and Survival",
+"body": "Modern compilers and OSs have built-in defenses against this. Stack Canaries place a random value right after the buffer; if it gets overwritten, the program intentionally crashes before the attacker can take control. ASLR (Address Space Layout Randomization) moves the stack around in memory every time the program runs.\n\nTo write safe C code, you must replace boundless functions like `strcpy` and `gets` with bounded equivalents like `strncpy` and `fgets`, which require you to explicitly state the maximum number of bytes to copy."
+},
+{
+"type": "code_practice",
+"heading": "Bounded Copy",
+"context": "Use the safe "strncpy" function to copy exactly `sizeof(dest)` bytes from `src` to `dest`.",
+"code_before": "char dest[16];\nchar *src = "This is a massive string that will cause a crash";\n\n// Safe copy requiring a size limit\n",
+"code_after": "(dest, src, sizeof(dest));",
+"correct_answer": "strncpy"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "What is the fundamental design flaw in the `strcpy` function that leads to buffer overflows?",
+"options": [
+"It uses a predictable random number generator.",
+"It relies on the destination variable to enforce its own memory limits.",
+"It only stops copying when it encounters a null byte, ignoring the actual size of the destination buffer.",
+"It automatically links against vulnerable static libraries."
+],
+"correct": 2,
+"hint": "The function only knows when the source string ends, not when the destination box is full."
+}
+]
+}
+}

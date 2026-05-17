@@ -1,0 +1,342 @@
+{
+  "mod_net_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Why Layers Exist",
+        "body": "Networking is complicated enough to have killed careers. The OSI model is the industry's peace treaty: slice the problem into seven layers, define what each layer is responsible for, let teams and vendors implement each layer independently. A fiber optic card maker does not need to know about HTTP. An HTTP library author does not need to know about electrical signaling.\n\nThe practical value is diagnostic. When something breaks, layers tell you where to look. 'The website is down' is useless. 'I have a Layer 3 route but no Layer 4 connection' tells you exactly which tool to reach for next. Security people use the OSI model the same way — attacks happen at specific layers and defenses are layer-specific. A DDoS at Layer 3 looks nothing like a SQL injection at Layer 7."
+      },
+      {
+        "type": "concept",
+        "heading": "All Seven, Fast",
+        "body": "Layer 1, Physical: bits on wire. Voltage, light pulses, radio waves. If a cable is unplugged, you die here. Layer 2, Data Link: frames between devices on the same network segment. MAC addresses live here. ARP poisoning attacks this layer. Layer 3, Network: packets routed across networks. IP addresses. This is where your router makes decisions.\n\nLayer 4, Transport: end-to-end connections between processes. TCP and UDP. Port numbers appear here for the first time. Layer 5, Session: managing the lifecycle of a conversation — setup, maintain, teardown. TLS session resumption lives vaguely here. Layer 6, Presentation: encoding, encryption, compression. TLS handshakes, character encoding. Layer 7, Application: the protocol your software speaks. HTTP, DNS, SMTP, FTP.\n\nMnemonic: Please Do Not Throw Sausage Pizza Away (bottom to top). Or All People Seem To Need Data Processing (top to bottom). Pick one and never forget it."
+      },
+      {
+        "type": "code",
+        "heading": "Touching every layer",
+        "body": "Python's socket library sits at Layer 4. This snippet shows the jump from a Layer 7 concern (HTTP) down to the raw Layer 4 socket, making the layering concrete.",
+        "code": "import socket\nimport http.client\n\n# Layer 7 — HTTP library handles framing, headers, and protocol logic\nconn = http.client.HTTPConnection(\"example.com\", 80)\nconn.request(\"GET\", \"/\")\nresp = conn.getresponse()\nprint(f\"L7 HTTP status: {resp.status}\")\nconn.close()\n\n# Layer 4 — raw TCP socket; we handle everything above manually\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)  # IPv4, TCP\ns.connect((\"example.com\", 80))                          # L3+L4 connection\n\n# We are now responsible for the L7 protocol ourselves\nrequest = b\"GET / HTTP/1.0\\r\\nHost: example.com\\r\\n\\r\\n\"\ns.sendall(request)\nresponse = s.recv(4096)\nprint(f\"L4 raw response starts: {response[:15]}\")\ns.close()"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Create a TCP socket",
+        "context": "Create a TCP socket using \"socket.socket\" with \"socket.AF_INET\" and \"socket.SOCK_STREAM\" as arguments, assigning the result to \"s\".",
+        "code_before": "import socket\n\n# AF_INET = IPv4 (Layer 3)\n# SOCK_STREAM = TCP (Layer 4)\n",
+        "code_after": "\ns.connect((\"example.com\", 80))\nprint(\"connected at Layer 4\")",
+        "correct_answer": "s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)"
+      },
+      {
+        "type": "code",
+        "heading": "Layer 2 with Scapy",
+        "body": "Scapy lets you build packets at any layer manually. This shows a Layer 2 Ethernet frame wrapping a Layer 3 IP packet — the nesting that the OSI model describes made literal in code.",
+        "code": "from scapy.all import Ether, IP, TCP, Raw, ls\n\n# Build from the bottom up — each layer wraps the one above\nethernet_frame = Ether(dst=\"ff:ff:ff:ff:ff:ff\")    # L2: broadcast MAC\nip_packet = IP(dst=\"192.168.1.1\")                  # L3: destination IP\ntcp_segment = TCP(dport=80, flags=\"S\")             # L4: SYN to port 80\npayload = Raw(load=b\"GET / HTTP/1.0\\r\\n\\r\\n\")       # L7: application data\n\n# Stack them with the / operator — Scapy's layer composition syntax\npacket = ethernet_frame / ip_packet / tcp_segment / payload\n\n# Inspect the composed packet — shows each layer's fields\npacket.show()\n\n# ls() dumps all fields for a given layer type — useful reference\nls(IP)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Stack IP on Ethernet",
+        "context": "Compose a Scapy packet by combining \"ethernet_frame\" and \"ip_packet\" using the \"/\" operator, assigning to \"packet\".",
+        "code_before": "from scapy.all import Ether, IP\n\nethernet_frame = Ether(dst=\"ff:ff:ff:ff:ff:ff\")\nip_packet = IP(dst=\"10.0.0.1\")\n\n# Stack the layers — / is Scapy's layer composition operator\n",
+        "code_after": "\npacket.show()",
+        "correct_answer": "packet = ethernet_frame / ip_packet"
+      },
+      {
+        "type": "concept",
+        "heading": "Where Attacks Live",
+        "body": "Knowing which layer an attack targets tells you which defense is relevant. ARP spoofing (Layer 2) is invisible to a firewall that inspects Layer 3 and above — you need Layer 2 inspection or dynamic ARP inspection on the switch. IP spoofing (Layer 3) bypasses source-address ACLs on internal networks. SYN floods (Layer 4) exhaust connection state on firewalls and servers. HTTP slowloris (Layer 7) holds connections open at the application layer, invisible to volumetric DDoS defenses.\n\nEncapsulation is both the model's strength and its attack surface. A Layer 7 payload can carry another Layer 3/4/7 header inside it — that is how DNS tunneling and HTTP tunneling evade firewalls. The firewall sees DNS (permitted), the attacker sees a covert channel. Defense-in-depth is just saying 'inspect multiple layers' with fancier words.\n\nIn practice, 'OSI Layer' is sometimes used loosely. Engineers often say 'Layer 3-4' to mean IP+TCP together. Security vendors say 'Layer 7 firewall' to mean application-aware. The model is a map, not a contract — real protocols blur the lines."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Send a UDP datagram",
+        "context": "Create a UDP socket by calling \"socket.socket\" with \"socket.AF_INET\" and \"socket.SOCK_DGRAM\" as arguments, assigning to \"s\".",
+        "code_before": "import socket\n\n# SOCK_DGRAM = UDP (Layer 4, connectionless)\n# AF_INET = IPv4 (Layer 3)\n",
+        "code_after": "\ns.sendto(b\"hello\", (\"127.0.0.1\", 9999))\nprint(\"UDP datagram sent — no handshake, no guarantee\")",
+        "correct_answer": "s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "A junior analyst reports that an attacker on the local network segment is intercepting traffic between two hosts that are not the attacker's own IP. No packets leave the local subnet. No firewall logs show anything. The victims' IP routing tables are clean. Which layer is the attack operating at and why is it invisible to IP-layer defenses?",
+        "options": [
+          "Layer 2 — ARP operates below IP, so MAC-address manipulation is invisible to firewalls and routing table inspection which only examine Layer 3 and above.",
+          "Layer 3 — IP spoofing bypasses firewall ACLs by forging source addresses before packets reach the inspection point.",
+          "Layer 4 — TCP sequence prediction lets the attacker inject into sessions without appearing in routing tables.",
+          "Layer 7 — the attack piggybacks on permitted application traffic, which the firewall is configured to allow."
+        ],
+        "correct": 0,
+        "hint": "The clue is 'local network segment' and 'routing tables are clean.' What protocol operates below IP to resolve addresses on a single segment, and what happens if its cache is poisoned?"
+      }
+    ]
+  },
+  "mod_net_2": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Why TCP Exists",
+        "body": "The internet ships packets on a best-effort basis: no ordering guarantees, no delivery guarantees, no notification if something drops. That is IP doing its job, which is 'try your best.' TCP is the layer above that fixes the problems IP deliberately ignores. It takes a stream of bytes you hand it and makes sure the bytes arrive in order, without gaps, exactly once.\n\nThe mechanism is simple in concept and brutal in implementation detail: sequence numbers tag every byte, acknowledgment numbers confirm receipt, retransmit timers fire when ACKs do not arrive, and a sliding window throttles how much data can be in flight at once. For most applications this is exactly what you want. For a security researcher, each of these mechanisms is also an attack surface."
+      },
+      {
+        "type": "concept",
+        "heading": "The Three-Way Handshake",
+        "body": "Before TCP sends one byte of application data, it establishes a connection with a three-message ritual. Client sends SYN with a random Initial Sequence Number (ISN). Server responds with SYN-ACK, acknowledging the client's ISN and announcing its own. Client sends ACK, confirming the server's ISN. Connection is open.\n\nThe server allocates state the moment it receives the SYN. That is the weakness. A SYN flood sends millions of SYNs with spoofed source IPs — the server builds half-open connection entries for each one, ACKs go into the void, and the connection table fills up. Legitimate clients find no room. SYN cookies solve this by encoding connection state into the ISN itself so the server needs no memory until the final ACK arrives.\n\nUDP skips all of this. Fire and forget — no handshake, no acknowledgment, no retransmit, no connection state. Faster, stateless, ideal for DNS and video streaming, and trivial to flood because spoofed UDP packets cost nothing to generate."
+      },
+      {
+        "type": "code",
+        "heading": "SYN packet by hand",
+        "body": "Scapy lets you send arbitrary TCP flags. This is how a SYN scanner works: send a SYN, watch for SYN-ACK (port open) or RST (port closed), never complete the handshake.",
+        "code": "from scapy.all import IP, TCP, sr1, conf\n\n# Quiet mode — suppress Scapy's interface warnings\nconf.verb = 0\n\ntarget_ip = \"192.168.1.1\"\ntarget_port = 80\n\n# Build the SYN — flags='S' sets only the SYN bit\nsyn = IP(dst=target_ip) / TCP(dport=target_port, flags=\"S\", seq=1000)\n\n# sr1: send one packet and receive the first reply, timeout after 2s\nresponse = sr1(syn, timeout=2)\n\nif response is None:\n    print(\"No response — filtered or dropped\")\nelif response.haslayer(TCP):\n    flags = response[TCP].flags\n    if flags == 0x12:          # SYN-ACK: 0x12 = SYN(0x02) | ACK(0x10)\n        print(f\"Port {target_port}: OPEN\")\n    elif flags == 0x14:        # RST-ACK: port closed\n        print(f\"Port {target_port}: CLOSED\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Build a SYN packet",
+        "context": "Create a Scapy TCP SYN packet by constructing \"IP(dst=target_ip) / TCP(dport=target_port, flags='S')\", assigning to \"syn\".",
+        "code_before": "from scapy.all import IP, TCP, sr1, conf\nconf.verb = 0\n\ntarget_ip = \"192.168.1.1\"\ntarget_port = 443\n\n# flags='S' sets only the SYN bit — half-open scan, never completes handshake\n",
+        "code_after": "\nresp = sr1(syn, timeout=2)\nprint(resp.summary() if resp else \"No response\")",
+        "correct_answer": "syn = IP(dst=target_ip) / TCP(dport=target_port, flags=\"S\")"
+      },
+      {
+        "type": "code",
+        "heading": "UDP flood and amplification",
+        "body": "UDP's statelessness makes it the preferred flood vehicle. This shows both a basic flood and the amplification pattern — small spoofed request, large response directed at the victim.",
+        "code": "import socket\nimport random\nimport struct\n\ndef udp_flood(target_ip, target_port, duration_packets=1000):\n    \"\"\"Basic UDP flood — educational only\"\"\"\n    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)\n    payload = b'A' * 1024              # 1KB payload per packet\n    sent = 0\n    while sent < duration_packets:\n        s.sendto(payload, (target_ip, target_port))\n        sent += 1\n    s.close()\n    print(f\"Sent {sent} UDP datagrams\")\n\n# Amplification concept: DNS is a classic amplifier\n# Attacker spoofs victim's IP as source, sends small DNS query to open resolver\n# Resolver sends large response (~50x amplification) directly to victim\n# Attacker bandwidth cost: tiny. Victim bandwidth hit: enormous.\nprint(\"DNS query: ~40 bytes  ->  DNS response: ~3000 bytes = 75x amplification\")\nprint(\"NTP monlist: ~46 bytes  ->  response: ~48000 bytes = 1000x amplification\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Create a UDP flood socket",
+        "context": "Create a UDP socket for the flood function by calling \"socket.socket\" with \"socket.AF_INET\" and \"socket.SOCK_DGRAM\", assigning to \"s\".",
+        "code_before": "import socket\n\ntarget_ip = \"127.0.0.1\"\ntarget_port = 9999\npayload = b'X' * 512\n\n# UDP — connectionless, no handshake, no state allocation on sender\n",
+        "code_after": "\ns.sendto(payload, (target_ip, target_port))\nprint(\"datagram away\")\ns.close()",
+        "correct_answer": "s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)"
+      },
+      {
+        "type": "concept",
+        "heading": "Flags, Scans, and Abuse",
+        "body": "TCP's six classic flags — SYN, ACK, FIN, RST, PSH, URG — can be combined in ways that firewalls and intrusion detection systems use as fingerprints. Nmap's scan types are essentially a catalog of flag combinations and what you can infer from the response.\n\nSYN scan (half-open): never completes the handshake, so older systems do not log it. FIN/NULL/Xmas scans: RFC 793 says a closed port responds to unexpected flags with RST; an open port ignores them. This works on BSD-based stacks; Windows sends RST regardless, making these scans useless there. An ACK scan does not detect open ports — it detects whether a firewall is stateful (RST from untracked ACK = stateful, no response = dropped by stateless rule).\n\nTCP sequence number prediction allows session hijacking if you can predict the ISN. Modern kernels use cryptographically random ISNs, making this impractical on anything from the last 20 years. RST injection requires only a correctly sequenced RST packet within the receive window, which is how the Great Firewall terminates connections."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Check for SYN-ACK response",
+        "context": "Check if \"response\" has a TCP layer by calling \"response.haslayer\" with \"TCP\" as the argument.",
+        "code_before": "from scapy.all import IP, TCP, sr1, conf\nconf.verb = 0\n\nsyn = IP(dst=\"192.168.1.1\") / TCP(dport=80, flags=\"S\")\nresponse = sr1(syn, timeout=2)\n\nif response and ",
+        "code_after": ":\n    if response[TCP].flags == 0x12:\n        print(\"Port 80: OPEN\")\n    else:\n        print(f\"Flags: {response[TCP].flags}\")",
+        "correct_answer": "response.haslayer(TCP)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "An IDS alert fires: one source IP sent 50,000 SYN packets to a single host in 10 seconds, each from a different spoofed source IP. The target host's available memory is dropping. No ACKs are completing the handshakes. Which attack is this and what server-side mitigation specifically addresses the memory exhaustion without blocking legitimate SYNs?",
+        "options": [
+          "SYN flood. SYN cookies encode connection state into the ISN so the server allocates no memory until the final ACK arrives, making half-open entries free.",
+          "UDP amplification. Ingress filtering at the border router drops spoofed source IPs before they reach the server.",
+          "RST injection. A stateful firewall tracks sequence numbers and drops out-of-window RSTs.",
+          "Slowloris. Rate-limiting incomplete HTTP connections per source IP prevents table exhaustion."
+        ],
+        "correct": 0,
+        "hint": "Half-open connections accumulate because the server allocates state on SYN receipt. What mechanism moves that state into the handshake itself so there is nothing to accumulate?"
+      }
+    ]
+  },
+  "mod_net_3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Why We Need CIDR",
+        "body": "Once upon a time IP addresses were carved into three rigid classes: Class A gave you 16 million hosts, Class B gave you 65,000, Class C gave you 254. If you needed 500 hosts you took a Class B and wasted 64,000 addresses. By the early 1990s the internet was running out of IPv4 space and the routing tables were exploding with millions of Class C entries.\n\nCIDR — Classless Inter-Domain Routing — was the fix. Instead of fixed classes, a network is described by a prefix length: how many leading bits identify the network, the rest identify hosts. A /24 gives 256 addresses. A /22 gives 1024. You carve exactly as much space as you need, aggregate smaller blocks into larger announcements, and the global routing table shrinks. CIDR notation is how every network is described today: 192.168.1.0/24, 10.0.0.0/8, 172.16.0.0/12."
+      },
+      {
+        "type": "concept",
+        "heading": "Masks, Hosts, Ranges",
+        "body": "The prefix length maps directly to a subnet mask: /24 is 255.255.255.0 (24 ones followed by 8 zeros). AND any IP address with the mask and you get the network address. The host portion is what remains. A /24 has 2^8 = 256 addresses total: subtract the network address (all zeros in host part) and the broadcast (all ones) and you have 254 usable hosts.\n\nThe math you do in your head on a pentest: /32 is one host. /31 is a point-to-point link, two addresses. /30 is four addresses, two usable — the smallest subnet that makes sense for a router link. /29 is eight, six usable. Each step down halves the block. Every step up doubles it. A /22 is four /24s. A /16 is 256 /24s.\n\nFor recon, the target's CIDR block tells you your scan scope. 10.0.0.0/8 is a very long day. 192.168.1.0/29 is six hosts and a coffee break."
+      },
+      {
+        "type": "code",
+        "heading": "Subnetting in Python",
+        "body": "Python's ipaddress module handles everything you would otherwise do on paper. Learn these calls and never subnet by hand again.",
+        "code": "import ipaddress\n\n# Parse a network — strict=False allows host bits to be set\nnet = ipaddress.ip_network(\"192.168.1.0/24\", strict=True)\n\nprint(f\"Network address : {net.network_address}\")\nprint(f\"Broadcast       : {net.broadcast_address}\")\nprint(f\"Netmask         : {net.netmask}\")\nprint(f\"Prefix length   : {net.prefixlen}\")\nprint(f\"Total hosts     : {net.num_addresses}\")\nprint(f\"Usable hosts    : {net.num_addresses - 2}\")\n\n# Iterate over all usable host IPs (excludes network + broadcast)\nfor host in list(net.hosts())[:5]:\n    print(f\"  Host: {host}\")\n\n# Check if an IP is inside the network\nip = ipaddress.ip_address(\"192.168.1.55\")\nprint(f\"192.168.1.55 in network: {ip in net}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Parse a network",
+        "context": "Parse the network \"10.0.0.0/8\" using \"ipaddress.ip_network\" with \"strict=True\" and assign to \"net\".",
+        "code_before": "import ipaddress\n\n# The entire private Class A space as a CIDR network object\n",
+        "code_after": "\nprint(net.num_addresses)\nprint(net.broadcast_address)",
+        "correct_answer": "net = ipaddress.ip_network(\"10.0.0.0/8\", strict=True)"
+      },
+      {
+        "type": "code",
+        "heading": "Subnetting and supernetting",
+        "body": "Splitting a network into smaller subnets and merging blocks into a summary route — both operations you need on the fly during network design or recon planning.",
+        "code": "import ipaddress\n\nnet = ipaddress.ip_network(\"10.10.0.0/22\")\n\n# Split into /24 subnets — a /22 contains exactly four /24s\nsubnets = list(net.subnets(new_prefix=24))\nfor s in subnets:\n    print(f\"Subnet: {s}  hosts: {s.num_addresses - 2}\")\n\n# Supernetting: summarize multiple adjacent /25s into a single announcement\nblocks = [\n    ipaddress.ip_network(\"192.168.0.0/25\"),\n    ipaddress.ip_network(\"192.168.0.128/25\"),\n]\nsummary = list(ipaddress.collapse_addresses(blocks))\nprint(f\"Summary route: {summary[0]}\")   # Should collapse to 192.168.0.0/24\n\n# Check whether an IP falls in a private range\nip = ipaddress.ip_address(\"10.1.2.3\")\nprint(f\"Is private: {ip.is_private}\")   # True — RFC 1918"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Split into /25 subnets",
+        "context": "Split \"net\" into subnets with prefix length 25 by calling \"net.subnets\" with \"new_prefix=25\", wrapping the result in \"list()\".",
+        "code_before": "import ipaddress\n\nnet = ipaddress.ip_network(\"192.168.1.0/24\")\n\n# A /24 splits cleanly into two /25s\n",
+        "code_after": "\nfor s in subnets:\n    print(s)",
+        "correct_answer": "subnets = list(net.subnets(new_prefix=25))"
+      },
+      {
+        "type": "concept",
+        "heading": "CIDR in the Wild",
+        "body": "RFC 1918 defines the three private address spaces you will see on every internal network: 10.0.0.0/8, 172.16.0.0/12, and 192.168.0.0/16. These are not routed on the public internet. NAT translates them to public IPs at the border. During a pentest, seeing a 10.x or 172.16-31.x host means you are looking at an internal network, possibly behind NAT, possibly reachable only from inside.\n\nCIDR blocks in passive recon come from WHOIS, ARIN/RIPE lookups, and BGP looking glasses. An organization's ASN tells you every prefix they announce. `whois -h whois.radb.net -- '-i origin AS15169'` dumps Google's prefixes. That is your external attack surface before you send a single packet.\n\nIPv6 CIDR works identically but with 128-bit addresses. ISPs hand out /48s to customers (65,536 /64 subnets). A single /64 has 2^64 hosts — more than four billion times the entire IPv4 space. Sequential scanning is hopeless; you need service discovery through other means when the target is IPv6-only."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Check if IP is in range",
+        "context": "Check whether the IP object \"ip\" is contained in network \"net\" using Python's \"in\" operator, assigning the boolean result to \"result\".",
+        "code_before": "import ipaddress\n\nnet = ipaddress.ip_network(\"172.16.0.0/12\")\nip = ipaddress.ip_address(\"172.20.5.1\")\n\n# RFC 1918 membership check — is this an internal address?\n",
+        "code_after": "\nprint(f\"In RFC1918 172.16/12 block: {result}\")",
+        "correct_answer": "result = ip in net"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You are scoping a pentest. The client provides the network 10.10.16.0/20 as in-scope. Your scanner asks for a start IP and end IP. What are the first usable host address and the broadcast address of this network?",
+        "options": [
+          "First usable: 10.10.16.1  — Broadcast: 10.10.31.255",
+          "First usable: 10.10.16.0  — Broadcast: 10.10.31.254",
+          "First usable: 10.10.16.1  — Broadcast: 10.10.32.0",
+          "First usable: 10.10.17.0  — Broadcast: 10.10.31.255"
+        ],
+        "correct": 0,
+        "hint": "A /20 means 20 network bits and 12 host bits. How many addresses does 2^12 give you, where does the block start, and what is the last address in that range?"
+      }
+    ]
+  },
+  "mod_net_4": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "How the Internet Routes",
+        "body": "The internet is not one network — it is roughly 80,000 independent networks called Autonomous Systems, each with its own number (ASN) and routing policy. BGP, the Border Gateway Protocol, is the glue. It is the only routing protocol that operates between ASes, and it is why a packet from your laptop in São Paulo can find a server in Seoul without anyone having pre-planned the specific path.\n\nBGP is a path-vector protocol: routers advertise reachability to IP prefixes along with the AS path that was used to reach them. Your BGP peer learns '10.0.0.0/8 is reachable via AS64496, AS3356, AS1234.' If that path breaks, BGP reconverges around it — in minutes if the network is well-designed, in hours if it is not. The entire internet's routing table lives in BGP and currently runs to about 950,000 IPv4 prefixes."
+      },
+      {
+        "type": "concept",
+        "heading": "DNS From Root Down",
+        "body": "You type a domain. DNS turns it into an IP. The machinery behind that sentence: your OS checks its local cache, then asks a recursive resolver (usually your ISP or 8.8.8.8). The resolver, if it does not have the answer cached, starts at one of the 13 root server clusters. The root says 'I do not know example.com, but here is who runs .com.' The resolver asks the .com TLD nameserver, which delegates to example.com's authoritative nameserver. The authoritative server answers with the A record.\n\nTTL — Time To Live — controls caching. A record with TTL 300 expires from every resolver's cache in five minutes. A record with TTL 86400 stays cached for a day. During a DNS migration you lower TTLs in advance; during an incident, a day-long TTL means a malicious record propagates for 24 hours before you can flush it.\n\nRecord types matter for recon: A (IPv4), AAAA (IPv6), MX (mail routing), CNAME (alias), TXT (SPF, DKIM, domain verification tokens), NS (authoritative nameservers), SOA (zone metadata including admin contact), PTR (reverse DNS). A full zone transfer (AXFR) hands you every record in a zone — most servers disable it, but some do not."
+      },
+      {
+        "type": "code",
+        "heading": "BGP and DNS recon",
+        "body": "Two tools that turn a domain into an attack surface map without sending a single packet to the target.",
+        "code": "import subprocess\nimport dns.resolver            # pip install dnspython\n\ndomain = \"example.com\"\n\n# Query A records — what IPs does this domain resolve to?\nresolver = dns.resolver.Resolver()\nanswers = resolver.resolve(domain, 'A')\nfor rdata in answers:\n    print(f\"A record: {rdata.address}\")\n\n# MX records — where does the mail go?\nmx_answers = resolver.resolve(domain, 'MX')\nfor r in mx_answers:\n    print(f\"MX: preference={r.preference} exchange={r.exchange}\")\n\n# TXT records — SPF, DKIM, domain verification tokens\ntxt_answers = resolver.resolve(domain, 'TXT')\nfor r in txt_answers:\n    print(f\"TXT: {r.to_text()}\")\n\n# NS records — who is authoritative?\nns_answers = resolver.resolve(domain, 'NS')\nfor r in ns_answers:\n    print(f\"NS: {r.target}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Query MX records",
+        "context": "Resolve MX records for \"domain\" by calling \"resolver.resolve\" with \"domain\" and \"'MX'\" as arguments, assigning to \"mx_answers\".",
+        "code_before": "import dns.resolver\n\ndomain = \"example.com\"\nresolver = dns.resolver.Resolver()\n\n# Mail exchange records reveal the email provider\n",
+        "code_after": "\nfor r in mx_answers:\n    print(f\"MX {r.preference}: {r.exchange}\")",
+        "correct_answer": "mx_answers = resolver.resolve(domain, 'MX')"
+      },
+      {
+        "type": "code",
+        "heading": "Zone transfer attempt",
+        "body": "AXFR gives you the full zone in one request. Servers that allow it are misconfigured. You should try it; defenders should block it. Both sides need to know how.",
+        "code": "import dns.zone\nimport dns.query\nimport dns.resolver\n\ndef attempt_zone_transfer(domain):\n    \"\"\"Try AXFR against each authoritative nameserver for the domain.\"\"\"\n    resolver = dns.resolver.Resolver()\n\n    # Step 1: find the authoritative nameservers\n    try:\n        ns_records = resolver.resolve(domain, 'NS')\n    except dns.exception.DNSException as e:\n        print(f\"NS lookup failed: {e}\")\n        return\n\n    for ns in ns_records:\n        ns_ip = str(resolver.resolve(str(ns.target), 'A')[0])\n        print(f\"Trying AXFR from {ns.target} ({ns_ip})...\")\n        try:\n            # AXFR: request the full zone — misconfigured servers comply\n            zone = dns.zone.from_xfr(dns.query.xfr(ns_ip, domain))\n            for name, node in zone.nodes.items():\n                print(f\"  {name}.{domain}\")\n        except Exception as e:\n            print(f\"  Transfer refused: {e}\")\n\nattempt_zone_transfer(\"example.com\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Resolve an NS nameserver IP",
+        "context": "Resolve the IPv4 address of \"ns_host\" by calling \"resolver.resolve\" with \"ns_host\" and \"'A'\", then index result with \"[0]\" and wrap in \"str()\".",
+        "code_before": "import dns.resolver\n\nresolver = dns.resolver.Resolver()\nns_host = \"ns1.example.com\"\n\n# Need the IP to send the zone transfer query directly\n",
+        "code_after": "\nprint(f\"Nameserver IP: {ns_ip}\")",
+        "correct_answer": "ns_ip = str(resolver.resolve(ns_host, 'A')[0])"
+      },
+      {
+        "type": "concept",
+        "heading": "BGP Hijacking and DNS Attacks",
+        "body": "BGP has no cryptographic authentication in its base form. A router that announces a more-specific prefix for an IP block it does not own will have that announcement propagate globally within minutes — other routers prefer more-specific prefixes and switch to the new path. This is BGP hijacking, and it has been used to intercept cryptocurrency transactions, spy on traffic, and cause major outages. RPKI (Resource Public Key Infrastructure) lets ASes sign their prefix announcements, and BGP Origin Validation rejects unsigned or mismatched routes. Adoption is growing but far from universal.\n\nDNS attacks live at every layer of the resolution chain. Cache poisoning (Kaminsky attack) injects forged records into a resolver's cache by winning a race to answer before the authoritative server. DNS hijacking points a zone's NS records at attacker-controlled nameservers. Subdomain takeover happens when a CNAME points to a cloud resource (S3 bucket, GitHub Pages) that no longer exists — claim the resource and you serve content under the legitimate domain. TXT record recon leaks SPF configurations, DKIM selectors, and cloud provider verification tokens that map infrastructure.\n\nDNSSEC signs zone data cryptographically so resolvers can verify authenticity. It stops cache poisoning but not hijacking at the registrar level, and it is still not universally deployed because it is genuinely painful to operate."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Query TXT records",
+        "context": "Resolve TXT records for \"domain\" by calling \"resolver.resolve\" with \"domain\" and \"'TXT'\" as arguments, assigning to \"txt_answers\".",
+        "code_before": "import dns.resolver\n\ndomain = \"target.com\"\nresolver = dns.resolver.Resolver()\n\n# TXT records leak SPF rules, DKIM selectors, and domain verification tokens\n",
+        "code_after": "\nfor r in txt_answers:\n    print(r.to_text())",
+        "correct_answer": "txt_answers = resolver.resolve(domain, 'TXT')"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "A security engineer notices that api.company.com has a CNAME record pointing to company-api.azurewebsites.net, but the Azure Web App was decommissioned six months ago and the name is no longer registered. What class of attack does this enable and what is the immediate remediation?",
+        "options": [
+          "Subdomain takeover — an attacker registers the dangling Azure resource and serves arbitrary content under api.company.com. Remediation: delete the CNAME record immediately.",
+          "DNS cache poisoning — the expired CNAME lets an attacker inject forged A records into resolver caches. Remediation: enable DNSSEC on the zone.",
+          "BGP hijacking — the decommissioned Azure ASN is now available for re-announcement. Remediation: file an RPKI ROA for the prefix.",
+          "AXFR zone transfer — the dangling record exposes the full zone to an unauthenticated transfer. Remediation: disable AXFR on the authoritative nameserver."
+        ],
+        "correct": 0,
+        "hint": "The CNAME still exists and still points somewhere — just somewhere nobody owns anymore. What happens when someone claims ownership of that destination?"
+      }
+    ]
+  },
+  "mod_net_5": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Kernel's Packet Journey",
+        "body": "When your application calls `send()`, a series of transformations happens before any electrons leave the NIC. The TCP layer adds a segment header with sequence numbers, checksums, and port numbers. The IP layer wraps that in a packet header with source and destination IPs and a TTL. The Ethernet driver wraps the packet in a frame with MAC addresses resolved from ARP. The NIC serializes the bits and puts them on the wire.\n\nIn the other direction, the NIC receives frames, the kernel verifies checksums, strips headers layer by layer, and eventually deposits bytes into the socket's receive buffer. Your `recv()` call drains that buffer. Everything between `send()` and wire, and between wire and `recv()`, is the TCP/IP stack — and every step is a potential attack surface, configuration knob, or performance bottleneck."
+      },
+      {
+        "type": "concept",
+        "heading": "Buffers, Windows, Sockets",
+        "body": "TCP flow control lives in the receive window: a field in every TCP header advertising how many bytes the receiver can currently accept. If your application is slow to call `recv()`, the buffer fills, the window shrinks toward zero, and the sender stalls. This is back-pressure by design. Slow down the reader and you slow down the entire connection — an observation that Slowloris exploits at the HTTP layer.\n\nThe kernel exposes tuning knobs for every buffer via `/proc/sys/net/ipv4/`. `tcp_rmem` and `tcp_wmem` control receive and send buffer sizes. `tcp_syn_retries` controls how many times to retry a SYN before giving up. `tcp_fin_timeout` controls how long a FIN-WAIT-2 state lingers. On a system under SYN flood, tweaking `tcp_syncookies`, `tcp_max_syn_backlog`, and `tcp_abort_on_overflow` is the difference between surviving and not.\n\nRaw sockets bypass the TCP/UDP stack entirely and deliver bare IP packets to your process. This is how packet sniffers, port scanners, and custom protocol implementations work. Root (or CAP_NET_RAW) required."
+      },
+      {
+        "type": "code",
+        "heading": "Socket options and kernel tunables",
+        "body": "The setsockopt calls that matter in practice, plus how to read the kernel's own view of connection state.",
+        "code": "import socket\nimport subprocess\n\n# Create a standard TCP socket\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n\n# SO_REUSEADDR: allow binding to a port in TIME_WAIT — critical for servers\ns.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\n# TCP_NODELAY: disable Nagle's algorithm — send immediately, no coalescing\n# Important for low-latency protocols where small packets are normal\ns.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)\n\n# SO_KEEPALIVE: kernel sends keepalive probes on idle connections\ns.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)\n\n# Read kernel TCP stats — connection states across the whole system\nresult = subprocess.run(['ss', '-s'], capture_output=True, text=True)\nprint(result.stdout)\n\n# Read the SYN backlog limit\nwith open('/proc/sys/net/ipv4/tcp_max_syn_backlog') as f:\n    print(f\"SYN backlog limit: {f.read().strip()}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Enable SO_REUSEADDR",
+        "context": "Set the SO_REUSEADDR socket option on \"s\" by calling \"s.setsockopt\" with \"socket.SOL_SOCKET\", \"socket.SO_REUSEADDR\", and \"1\".",
+        "code_before": "import socket\n\ns = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n\n# Without this, restarting a server before TIME_WAIT expires gives 'Address already in use'\n",
+        "code_after": "\ns.bind((\"0.0.0.0\", 8080))\nprint(\"Bound — TIME_WAIT is no longer your problem\")",
+        "correct_answer": "s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)"
+      },
+      {
+        "type": "code",
+        "heading": "Raw socket packet capture",
+        "body": "A raw socket at the Ethernet level delivers every frame to your process. This is how tcpdump works, stripped to the minimum.",
+        "code": "import socket\nimport struct\n\n# AF_PACKET requires root. ETH_P_ALL captures every protocol.\ntry:\n    raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW,\n                        socket.htons(0x0003))  # ETH_P_ALL = 0x0003\nexcept PermissionError:\n    print(\"Need root/CAP_NET_RAW — run with sudo\")\n    exit(1)\n\nfor _ in range(5):\n    frame, addr = raw.recvfrom(65535)          # Full MTU buffer\n\n    # Parse the Ethernet header — 14 bytes: dst(6) src(6) ethertype(2)\n    dst_mac = ':'.join(f'{b:02x}' for b in frame[0:6])\n    src_mac = ':'.join(f'{b:02x}' for b in frame[6:12])\n    ethertype = struct.unpack('!H', frame[12:14])[0]\n\n    print(f\"{src_mac} -> {dst_mac}  ethertype=0x{ethertype:04x}  len={len(frame)}\")\n\nraw.close()"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Open a raw packet socket",
+        "context": "Create a raw Ethernet socket by calling \"socket.socket\" with \"socket.AF_PACKET\", \"socket.SOCK_RAW\", and \"socket.htons(0x0003)\", assigning to \"raw\".",
+        "code_before": "import socket\n\n# AF_PACKET delivers raw Ethernet frames — requires CAP_NET_RAW\n# htons(0x0003) = ETH_P_ALL: capture every protocol\n",
+        "code_after": "\nframe, _ = raw.recvfrom(65535)\nprint(f\"Captured frame of {len(frame)} bytes\")\nraw.close()",
+        "correct_answer": "raw = socket.socket(socket.AF_PACKET, socket.SOCK_RAW, socket.htons(0x0003))"
+      },
+      {
+        "type": "concept",
+        "heading": "TIME_WAIT, FIN_WAIT, and State Exhaustion",
+        "body": "TCP has 11 states. Most connections live in ESTABLISHED. The tricky ones are at the ends. TIME_WAIT keeps a connection entry for 2*MSL (Maximum Segment Lifetime, typically 60 seconds) after close, to absorb any delayed packets that might arrive for the old connection. A busy server making many outbound short connections can exhaust its ephemeral port range entirely — all ports in TIME_WAIT, new connections refused. SO_REUSEADDR and SO_REUSEPORT, or tuning the ephemeral port range in `/proc/sys/net/ipv4/ip_local_port_range`, are the knobs.\n\nFIN_WAIT_2 lingers when the remote end sends FIN but the local application has not closed its socket. `tcp_fin_timeout` bounds this. CLOSE_WAIT is the opposite: the remote sent FIN, the kernel ACK'd it, but your application never called `close()`. CLOSE_WAIT accumulation is always a bug in your application.\n\nFor an attacker, state exhaustion is a denial-of-service vector without sending malformed packets. If you can force a server into TIME_WAIT for enough distinct source ports, you saturate its ability to accept new connections from legitimate clients. Combine with IP spoofing and it is difficult to filter."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Read SYN backlog limit",
+        "context": "Open the file \"/proc/sys/net/ipv4/tcp_max_syn_backlog\" using Python's built-in \"open\" function and read its content with \".read().strip()\", assigning to \"backlog\".",
+        "code_before": "# Kernel tunable — controls how many half-open SYN connections queue before dropping\n# Raising this helps survive SYN floods; SYN cookies make it less critical\n",
+        "code_after": "\nprint(f\"SYN backlog: {backlog}\")",
+        "correct_answer": "backlog = open('/proc/sys/net/ipv4/tcp_max_syn_backlog').read().strip()"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "A high-throughput trading server opens and closes hundreds of short-lived outbound TCP connections per second to a market data feed. The ops team reports intermittent 'connection refused' errors from the trading server's own outbound calls despite the remote server being healthy. `ss -s` shows 28,000 sockets in TIME_WAIT. What is the root cause and the most targeted fix?",
+        "options": [
+          "Ephemeral port exhaustion from TIME_WAIT accumulation. Widen the local port range via /proc/sys/net/ipv4/ip_local_port_range and enable tcp_tw_reuse to allow reuse of TIME_WAIT sockets for new outbound connections.",
+          "The remote server's SYN backlog is full. Increase tcp_max_syn_backlog on the remote host.",
+          "The trading server's receive buffers are full. Increase tcp_rmem via sysctl.",
+          "SO_REUSEADDR is not set on the outbound sockets. Enabling it will release TIME_WAIT ports immediately."
+        ],
+        "correct": 0,
+        "hint": "TIME_WAIT sockets hold ports. Ports for outbound connections come from the ephemeral range. When that range fills, what happens to the next connection attempt?"
+      }
+    ]
+  }
+}

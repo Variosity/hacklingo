@@ -1,0 +1,342 @@
+{
+  "mod_pad_2": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Honeytokens Catch Attackers",
+        "body": "A honeytoken is a fake credential, account, or object that has no legitimate business use — its only job is to scream when touched. In Active Directory, this means planting user accounts, SPNs, or Group Policy objects that real admins would never query. The moment an attacker's enumeration script trips over one, you know the network is compromised.\n\nThink of it like a dye pack in a bank vault. The cash is fake, but the ink is real. Any attacker worth their salt runs BloodHound or PowerView across your domain — and those tools are indiscriminate. They'll enumerate everything, including your traps.\n\nHoneytokens don't stop attacks. They detect them at the recon phase, before the attacker has pivoted or exfiltrated anything. That detection window is gold."
+      },
+      {
+        "type": "concept",
+        "heading": "How AD Honeytokens Work",
+        "body": "Active Directory logs every LDAP query, Kerberos ticket request, and object access — if you configure auditing correctly. A honeytoken account works by having Windows Security auditing fire an event (ID 4768 for TGT requests, 4769 for service tickets, 4625 for failed logins) whenever anyone interacts with it.\n\nThe key properties of a good AD honeytoken: it looks real (realistic name, plausible description, maybe a stale password-last-set date), it is never used by any legitimate process, and it has auditing configured to alert on any access. A user named 'svc_backup_old' with a 3-year-old password and Domain Admin group membership is catnip for attackers running privilege enumeration.\n\nFor Kerberoastable honeytokens, you assign a Service Principal Name (SPN) to the account. Any attacker running Rubeus or GetUserSPNs.py will request a TGT for it — and that TGT request is logged with the requester's IP and username. You've just tagged your attacker without them knowing."
+      },
+      {
+        "type": "code",
+        "heading": "Creating a Honeytoken Account via PowerShell",
+        "body": "This script creates a convincing honeytoken user in AD, assigns an SPN to make it Kerberoastable, and enables object-level auditing so any access fires a Windows Security event.",
+        "code": "# Requires: ActiveDirectory module, Domain Admin rights\n# Purpose: Deploy a Kerberoastable honeytoken account with auditing\n\nImport-Module ActiveDirectory\n\n$HoneyName   = \"svc_legacybackup\"          # Looks like a real service account\n$HoneyDN     = \"CN=svc_legacybackup,OU=ServiceAccounts,DC=corp,DC=local\"\n$FakePass    = ConvertTo-SecureString \"Backup2019!Legacy\" -AsPlainText -Force\n\n# Create the account — disabled so it can never actually authenticate normally\nNew-ADUser -Name $HoneyName `\n           -SamAccountName $HoneyName `\n           -AccountPassword $FakePass `\n           -PasswordNeverExpires $true `\n           -Enabled $false `\n           -Description \"Legacy backup service - DO NOT DELETE\"\n\n# Assign an SPN: this makes it Kerberoastable by any domain user\nSet-ADUser -Identity $HoneyName -ServicePrincipalNames @{Add=\"MSSQLSvc/legacy-bkp01.corp.local:1433\"}\n\n# Enable auditing: log ALL access attempts on this object\n# Get the object's ACL and add a SACL (System ACL) audit entry\n$Acl = Get-Acl -Path \"AD:\\$HoneyDN\"\n$AuditRule = New-Object System.DirectoryServices.ActiveDirectoryAuditRule(\n    [System.Security.Principal.SecurityIdentifier]\"S-1-1-0\",  # Everyone\n    [System.DirectoryServices.ActiveDirectoryRights]::GenericAll,\n    [System.Security.AccessControl.AuditFlags]::Success\n)\n$Acl.AddAuditRule($AuditRule)\nSet-Acl -Path \"AD:\\$HoneyDN\" -AclObject $Acl\n\nWrite-Host \"[+] Honeytoken deployed: $HoneyName\" -ForegroundColor Green\nWrite-Host \"[+] SPN registered — account is now Kerberoastable\" -ForegroundColor Green"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Register the Honeytoken SPN",
+        "context": "Using the Set-ADUser cmdlet, add a ServicePrincipalName to a user named \"svc_legacybackup\". Fill in the missing cmdlet name. The parameter is -ServicePrincipalNames @{Add=\"HTTP/fake.corp.local\"}. Type only the cmdlet: \"Set-ADUser\".",
+        "code_before": "-Identity \"svc_legacybackup\" `",
+        "code_after": "    -ServicePrincipalNames @{Add=\"HTTP/fake.corp.local\"}",
+        "correct_answer": "Set-ADUser"
+      },
+      {
+        "type": "code",
+        "heading": "SIEM Alert Rule for Honeytoken Access",
+        "body": "Deploying the account is half the job. Here's a PowerShell script that parses Windows Security event logs and fires an alert whenever Event ID 4769 (Kerberos service ticket) targets your honeytoken's SPN — run this on your SIEM forwarder or as a scheduled task.",
+        "code": "# Monitor Security event log for Kerberos TGS requests targeting the honeytoken\n# Event 4769: A Kerberos service ticket was requested\n# Run as: Scheduled Task or forwarded via WEF to SIEM\n\n$HoneySPN      = \"MSSQLSvc/legacy-bkp01.corp.local:1433\"  # Must match exactly\n$AlertEmail    = \"soc@corp.local\"\n$LookbackMins  = 5   # Check last 5 minutes on each run\n\n$StartTime = (Get-Date).AddMinutes(-$LookbackMins)\n\n# Filter Security log for Kerberos service ticket events\n$Events = Get-WinEvent -FilterHashtable @{\n    LogName   = \"Security\"\n    Id        = 4769                   # Kerberos Service Ticket Operations\n    StartTime = $StartTime\n} -ErrorAction SilentlyContinue\n\nforeach ($Event in $Events) {\n    $Xml     = [xml]$Event.ToXml()\n    $SPN     = $Xml.Event.EventData.Data | Where-Object { $_.Name -eq \"ServiceName\" } | Select-Object -ExpandProperty \"#text\"\n    $Client  = $Xml.Event.EventData.Data | Where-Object { $_.Name -eq \"ClientAddress\" } | Select-Object -ExpandProperty \"#text\"\n    $Account = $Xml.Event.EventData.Data | Where-Object { $_.Name -eq \"TargetUserName\" } | Select-Object -ExpandProperty \"#text\"\n\n    if ($SPN -like \"*legacy-bkp01*\") {   # Honeytoken SPN matched\n        $Body = \"HONEYTOKEN TRIGGERED`nSPN: $SPN`nRequester: $Account`nSource IP: $Client`nTime: $($Event.TimeCreated)\"\n        Write-Warning $Body\n        # Send-MailMessage -To $AlertEmail -Subject \"[ALERT] Honeytoken Kerberoast\" -Body $Body -SmtpServer \"smtp.corp.local\"\n    }\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Filter for the Right Event ID",
+        "context": "In the Get-WinEvent FilterHashtable, you need to filter for Kerberos service ticket events. Fill in the correct Windows Security Event ID for a Kerberos service ticket request. The value is the integer \"4769\".",
+        "code_before": "$Events = Get-WinEvent -FilterHashtable @{\n    LogName   = \"Security\"\n    Id        =",
+        "code_after": "    StartTime = $StartTime\n} -ErrorAction SilentlyContinue",
+        "correct_answer": "4769"
+      },
+      {
+        "type": "concept",
+        "heading": "Gotchas & Opsec Mistakes",
+        "body": "The most common failure: your honeytoken looks fake. If the account has a creation date of today, a generic description, and has never had a login — a seasoned attacker running BloodHound with custom Cypher queries may spot it. Age your accounts. Set a plausible PasswordLastSet date using Set-ADUser -PasswordLastSet and manipulate the attribute directly via ADSI if needed.\n\nSecond trap: no one monitors the alerts. A honeytoken that fires into a log nobody reads is security theater. Wire it into your SIEM with a P1 alert. Honeytoken alerts should have near-zero false positive rate — if one fires, treat it as a confirmed intrusion, not a maybe.\n\nThird: don't create only one. An attacker who trips one and gets no follow-on compromise may realize it was a trap. Spread multiple honeytokens across different OUs, service account naming conventions, and privilege levels. Make them part of the AD landscape, not obvious outliers.\n\nFinally: Kerberoastable honeytokens with weak passwords are a double-edged sword. If the attacker cracks the hash offline, they get nothing — the account is disabled and has no real access. But make sure it truly has no access, or you've built your own backdoor."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Disable the Honeytoken Account",
+        "context": "After creating the account with New-ADUser, you must disable it so it cannot be used for actual authentication. Use the Set-ADUser cmdlet with the -Identity \"svc_legacybackup\" and the parameter \"-Enabled $false\". Type only the cmdlet name: \"Set-ADUser\".",
+        "code_before": "# Ensure the honeytoken cannot authenticate\n",
+        "code_after": " -Identity \"svc_legacybackup\" -Enabled $false",
+        "correct_answer": "Set-ADUser"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "An attacker running SharpHound for BloodHound enumeration triggers a 4769 event against your honeytoken SPN at 2:17 AM. Your SIEM pages the SOC. Which response action is most appropriate as the immediate first step?\n\nA) Reset the honeytoken account's password\nB) Isolate the source IP's host and begin IR triage\nC) Delete the honeytoken so the attacker doesn't know they were detected\nD) Wait to collect more events before acting",
+        "options": [
+          "Isolate the source IP's host and begin IR triage",
+          "Reset the honeytoken account's password",
+          "Delete the honeytoken so the attacker isn't alerted",
+          "Wait for more events before acting"
+        ],
+        "correct": 0,
+        "hint": "A honeytoken has a near-zero false positive rate — recall what that means about the confidence level of this alert before deciding how urgently to act."
+      }
+    ]
+  },
+  "mod_png_3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "ATT&CK as Code",
+        "body": "The MITRE ATT&CK framework is a structured catalog of adversary tactics, techniques, and procedures (TTPs) — but it's just a wiki until you automate it. Purple team operators write tooling that executes specific TTPs on demand: run T1059.001 (PowerShell execution), log what EDR catches, compare against what it should catch. Rinse, repeat across 200 techniques.\n\nGo is the right language for this. It compiles to a single static binary, runs on Windows and Linux without dependencies, and its concurrency model (goroutines) lets you execute multiple TTPs in parallel while collecting telemetry. Writing TTP automation in Go means your simulation engine is a single file drop — no Python interpreter, no DLL hell.\n\nThis module builds the core of that engine: a dispatcher that maps ATT&CK technique IDs to Go functions, executes them, and returns structured results you can feed into a reporting pipeline."
+      },
+      {
+        "type": "concept",
+        "heading": "TTP Dispatcher Architecture",
+        "body": "The architecture is a function registry: a map[string]func() TTPResult where the key is the ATT&CK technique ID (e.g. \"T1082\") and the value is the function that executes it. At runtime, your engine iterates a list of requested technique IDs, looks each one up in the registry, and executes it — capturing stdout, stderr, error state, and timing.\n\nEach TTP function returns a TTPResult struct: technique ID, whether it executed successfully, any output collected, and a timestamp. This structured output is what gets serialized to JSON for your SIEM or report generator.\n\nConcurrency is handled with goroutines and a WaitGroup. You fire each TTP in its own goroutine, collect results through a channel, and join at the end. The engine doesn't care what the TTP does — it just runs it and records the outcome. That separation of concerns is what makes the engine extensible."
+      },
+      {
+        "type": "code",
+        "heading": "TTP Registry and Result Types",
+        "body": "Here's the foundational data model and registry for the ATT&CK automation engine — the types and the map that wires technique IDs to execution functions.",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"os/exec\"\n\t\"runtime\"\n\t\"time\"\n)\n\n// TTPResult captures the outcome of a single technique execution\ntype TTPResult struct {\n\tTechniqueID string        // e.g. \"T1082\"\n\tName        string        // Human-readable technique name\n\tSuccess     bool          // Did it execute without error?\n\tOutput      string        // Captured stdout/stderr\n\tDuration    time.Duration // How long it took\n\tTimestamp   time.Time     // When it ran\n}\n\n// TTPFunc is the signature every technique implementation must satisfy\ntype TTPFunc func() TTPResult\n\n// Registry maps ATT&CK technique IDs to their execution functions\nvar Registry = map[string]TTPFunc{\n\t\"T1082\": techniqueSystemInfoDiscovery,  // System Information Discovery\n\t\"T1057\": techniqueProcessDiscovery,     // Process Discovery\n\t\"T1016\": techniqueNetworkConfig,        // System Network Configuration Discovery\n}\n\n// techniqueSystemInfoDiscovery implements T1082 — runs OS-native info commands\nfunc techniqueSystemInfoDiscovery() TTPResult {\n\tstart := time.Now()\n\tcmd := \"uname -a\"                        // Linux; swap for \"systeminfo\" on Windows\n\tif runtime.GOOS == \"windows\" {\n\t\tcmd = \"systeminfo\"\n\t}\n\tout, err := exec.Command(\"sh\", \"-c\", cmd).CombinedOutput() // Capture stdout+stderr\n\treturn TTPResult{\n\t\tTechniqueID: \"T1082\",\n\t\tName:        \"System Information Discovery\",\n\t\tSuccess:     err == nil,\n\t\tOutput:      string(out),\n\t\tDuration:    time.Since(start),\n\t\tTimestamp:   time.Now(),\n\t}\n}\n\nfunc main() {\n\tfmt.Println(\"[*] ATT&CK Engine initialised — registry has\", len(Registry), \"techniques\")\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define the TTPResult Struct Field",
+        "context": "In the TTPResult struct, add the field that stores how long the technique took to run. The field must be named \"Duration\" with type \"time.Duration\". Type exactly: \"Duration time.Duration\".",
+        "code_before": "type TTPResult struct {\n\tTechniqueID string\n\tName        string\n\tSuccess     bool\n\tOutput      string\n",
+        "code_after": "\tTimestamp   time.Time\n}",
+        "correct_answer": "\tDuration    time.Duration"
+      },
+      {
+        "type": "code",
+        "heading": "Concurrent TTP Dispatcher",
+        "body": "This is the engine's dispatcher: it accepts a slice of technique IDs, fires each one in a goroutine, collects results through a channel, and returns them all once every goroutine completes.",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"sync\"\n)\n\n// Dispatch runs a list of technique IDs concurrently and returns all results\nfunc Dispatch(ids []string) []TTPResult {\n\tresults := make(chan TTPResult, len(ids)) // Buffered channel — one slot per technique\n\tvar wg sync.WaitGroup\n\n\tfor _, id := range ids {\n\t\tfn, ok := Registry[id]               // Look up the technique in the registry\n\t\tif !ok {\n\t\t\tfmt.Printf(\"[-] Unknown technique: %s — skipping\\n\", id)\n\t\t\tcontinue\n\t\t}\n\t\twg.Add(1)                            // Increment counter before launching goroutine\n\t\tgo func(f TTPFunc, techniqueID string) {\n\t\t\tdefer wg.Done()                  // Decrement when goroutine exits\n\t\t\tfmt.Printf(\"[*] Executing %s\\n\", techniqueID)\n\t\t\tresults <- f()                   // Execute and send result to channel\n\t\t}(fn, id)\n\t}\n\n\twg.Wait()        // Block until every goroutine calls wg.Done()\n\tclose(results)   // Safe to close — all writers are done\n\n\t// Drain the channel into a slice\n\tvar out []TTPResult\n\tfor r := range results {\n\t\tout = append(out, r)\n\t}\n\treturn out\n}\n\nfunc main() {\n\tresults := Dispatch([]string{\"T1082\", \"T1057\", \"T1016\"})\n\tfor _, r := range results {\n\t\tfmt.Printf(\"[%s] %s | success=%v | duration=%s\\n\",\n\t\t\tr.TechniqueID, r.Name, r.Success, r.Duration)\n\t}\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Increment the WaitGroup",
+        "context": "Before launching each goroutine in the Dispatch function, you must increment the WaitGroup counter. Call the Add method on the WaitGroup variable named \"wg\" with argument 1. Type exactly: \"wg.Add(1)\".",
+        "code_before": "\tfor _, id := range ids {\n\t\tfn, ok := Registry[id]\n\t\tif !ok { continue }\n",
+        "code_after": "\t\tgo func(f TTPFunc) {\n\t\t\tdefer wg.Done()\n\t\t\tresults <- f()\n\t\t}(fn)\n\t}",
+        "correct_answer": "\t\twg.Add(1)"
+      },
+      {
+        "type": "concept",
+        "heading": "Gotchas, Timing & EDR",
+        "body": "The biggest mistake in TTP automation: running everything at full speed and wondering why EDR catches it all. Real adversaries introduce jitter. Build a configurable delay — even 500ms between technique executions changes the behavioral signature enough to evade time-based correlation rules. A time.Sleep(time.Duration(rand.Intn(maxJitter)) * time.Millisecond) before each dispatch is not optional in a real purple team tool.\n\nSecond gotcha: your goroutines share nothing by default, but exec.Command inherits the parent process's environment. If you're testing credential-based techniques, the test harness's own credentials bleed into subprocesses. Use exec.Cmd.Env to explicitly set a clean environment.\n\nThird: the Registry map in Go is not goroutine-safe for writes. If you're dynamically loading techniques at runtime (e.g. from a plugin directory), protect the registry with a sync.RWMutex — read-lock during dispatch, write-lock during registration. For static registries this doesn't matter, but the moment you add hot-reload, you have a race condition.\n\nFinally: log everything to a structured format (JSON, not printf). Your purple team report is built from these logs. An unstructured output means manual triage. Use encoding/json to marshal TTPResult directly."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Serialize Result to JSON",
+        "context": "After collecting results in Dispatch, serialize a single TTPResult variable named \"r\" to JSON using the standard library. Use the function \"json.Marshal\" passing \"r\" as the argument, capturing both return values into \"data\" and \"err\". Type exactly: \"data, err := json.Marshal(r)\".",
+        "code_before": "import \"encoding/json\"\n\nfunc printResult(r TTPResult) {\n",
+        "code_after": "\tif err == nil {\n\t\tfmt.Println(string(data))\n\t}\n}",
+        "correct_answer": "\tdata, err := json.Marshal(r)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Your ATT&CK automation engine fires T1082, T1057, and T1016 as concurrent goroutines. After calling wg.Wait() and close(results), you range over the results channel to build your output slice. In a test run, you notice results sometimes arrive in a different order than the techniques were dispatched. What is the correct interpretation?\n\nA) There is a race condition — the WaitGroup is misconfigured\nB) This is expected — goroutine scheduling is non-deterministic\nC) The channel buffer is too small and dropping results\nD) You must use a mutex to enforce ordering",
+        "options": [
+          "There is a race condition — the WaitGroup is misconfigured",
+          "This is expected — goroutine scheduling is non-deterministic",
+          "The channel buffer is too small and is dropping results",
+          "A mutex is required to enforce result ordering"
+        ],
+        "correct": 1,
+        "hint": "Recall how Go schedules goroutines and whether the dispatcher makes any guarantees about execution order versus completion order."
+      }
+    ]
+  },
+  "mod_png_boss": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "What You're Building",
+        "body": "This is the capstone. You're assembling a full-stack breach simulation engine in Go: a component that plans a multi-stage attack chain (recon → initial access → persistence → exfil), executes each stage as ATT&CK-mapped TTP functions, captures telemetry at every step, and produces a structured JSON report mapping what executed against what a defender should have caught.\n\nThis is what commercial tools like Atomic Red Team, Caldera, and BAS (Breach and Attack Simulation) platforms do — except you're building it from primitives. You understand every line.\n\nThe engine has four layers: a Scenario definition (ordered list of stages with technique IDs), a Dispatcher (concurrent TTP executor from the last module), a Telemetry collector (structured logging of every execution), and a Reporter (JSON output of the full breach chain with pass/fail per technique). By the end of this module, you can drop a single Go binary on a test host, run a simulated APT campaign, and get a machine-readable report."
+      },
+      {
+        "type": "concept",
+        "heading": "Scenario & Stage Data Model",
+        "body": "A Scenario is a named, ordered sequence of Stages. Each Stage maps to an ATT&CK tactic (e.g. TA0002 Execution) and contains one or more technique IDs to run. Stages run sequentially — you don't move to Persistence until Initial Access completes. Within a stage, techniques run concurrently via the dispatcher.\n\nThe Scenario struct holds metadata (name, author, target description) and a slice of Stage structs. Each Stage has a tactic label, a slice of technique IDs, and a StopOnFailure flag — if any technique in the stage fails and that flag is set, the engine aborts the chain. This mirrors real adversary behavior: if you can't get execution, you don't bother trying to persist.\n\nThe Report struct is the output: it mirrors the Scenario structure but each technique entry is replaced with a TTPResult from the dispatcher. The report gets serialized to JSON at the end, with a top-level summary field: total techniques attempted, succeeded, failed, and total wall-clock duration."
+      },
+      {
+        "type": "code",
+        "heading": "Scenario Definition and Engine Core",
+        "body": "Here is the complete data model for the engine and the Run function that orchestrates a full scenario — stage by stage, collecting results into a final report.",
+        "code": "package main\n\nimport (\n\t\"encoding/json\"\n\t\"fmt\"\n\t\"os\"\n\t\"time\"\n)\n\n// Stage represents one tactic phase in the attack chain\ntype Stage struct {\n\tTactic        string   // ATT&CK tactic label, e.g. \"TA0003 Persistence\"\n\tTechniques    []string // Technique IDs to execute in this stage\n\tStopOnFailure bool     // Abort the scenario if any technique in this stage fails\n}\n\n// Scenario is the full attack plan\ntype Scenario struct {\n\tName    string  // e.g. \"APT29 Simulation\"\n\tAuthor  string\n\tTarget  string  // Description of the target environment\n\tStages  []Stage\n}\n\n// Report is the structured output of a completed scenario run\ntype Report struct {\n\tScenario  Scenario              // Original plan\n\tResults   map[string]TTPResult  // technique ID -> result\n\tStarted   time.Time\n\tFinished  time.Time\n\tSucceeded int\n\tFailed    int\n}\n\n// Run executes a Scenario and returns a populated Report\nfunc Run(s Scenario) Report {\n\treport := Report{\n\t\tScenario: s,\n\t\tResults:  make(map[string]TTPResult),\n\t\tStarted:  time.Now(),\n\t}\n\n\tfor _, stage := range s.Stages {\n\t\tfmt.Printf(\"\\n[STAGE] %s\\n\", stage.Tactic)\n\t\tstageResults := Dispatch(stage.Techniques)  // Concurrent execution from module 3\n\n\t\tstageFailed := false\n\t\tfor _, r := range stageResults {\n\t\t\treport.Results[r.TechniqueID] = r\n\t\t\tif r.Success {\n\t\t\t\treport.Succeeded++\n\t\t\t} else {\n\t\t\t\treport.Failed++\n\t\t\t\tstageFailed = true\n\t\t\t}\n\t\t}\n\n\t\tif stage.StopOnFailure && stageFailed {\n\t\t\tfmt.Println(\"[-] Stage failed and StopOnFailure=true — aborting scenario\")\n\t\t\tbreak  // Abort the rest of the attack chain\n\t\t}\n\t}\n\n\treport.Finished = time.Now()\n\treturn report\n}\n\n// WriteReport serialises the report to a JSON file\nfunc WriteReport(r Report, path string) error {\n\tdata, err := json.MarshalIndent(r, \"\", \"  \")  // Pretty-printed JSON\n\tif err != nil {\n\t\treturn err\n\t}\n\treturn os.WriteFile(path, data, 0644)\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Set the Report Start Time",
+        "context": "When initialising the Report struct inside the Run function, set the Started field to the current time. Use \"time.Now()\" as the value assigned to the \"Started\" field. Type exactly: \"Started: time.Now(),\".",
+        "code_before": "report := Report{\n\tScenario: s,\n\tResults:  make(map[string]TTPResult),\n",
+        "code_after": "}",
+        "correct_answer": "\tStarted:  time.Now(),"
+      },
+      {
+        "type": "code",
+        "heading": "Full Engine Entry Point",
+        "body": "The main function wires everything together: defines the scenario, runs it, writes the report, and prints a human-readable summary. This is what operators actually invoke on the target host.",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"log\"\n)\n\nfunc main() {\n\t// Define the simulation scenario — a simplified APT29-style chain\n\tscenario := Scenario{\n\t\tName:   \"APT29 Purple Team Exercise\",\n\t\tAuthor: \"purple-team@corp.local\",\n\t\tTarget: \"corp.local — Windows Server 2022 test host\",\n\t\tStages: []Stage{\n\t\t\t{\n\t\t\t\tTactic:        \"TA0007 Discovery\",\n\t\t\t\tTechniques:    []string{\"T1082\", \"T1057\", \"T1016\"}, // Run these concurrently\n\t\t\t\tStopOnFailure: false,  // Discovery failures are non-critical\n\t\t\t},\n\t\t\t{\n\t\t\t\tTactic:        \"TA0003 Persistence\",\n\t\t\t\tTechniques:    []string{\"T1053\"},  // Scheduled task creation\n\t\t\t\tStopOnFailure: true,   // Can't continue without persistence\n\t\t\t},\n\t\t\t{\n\t\t\t\tTactic:        \"TA0010 Exfiltration\",\n\t\t\t\tTechniques:    []string{\"T1041\"}, // Exfil over C2 channel\n\t\t\t\tStopOnFailure: true,\n\t\t\t},\n\t\t},\n\t}\n\n\tfmt.Println(\"[*] Breach Simulation Engine starting\")\n\tfmt.Printf(\"[*] Scenario: %s\\n\", scenario.Name)\n\n\treport := Run(scenario)  // Execute the full attack chain\n\n\t// Write machine-readable report for SIEM ingestion\n\tif err := WriteReport(report, \"/tmp/breach_report.json\"); err != nil {\n\t\tlog.Fatalf(\"[-] Failed to write report: %v\", err)\n\t}\n\n\t// Human-readable summary to stdout\n\tfmt.Printf(\"\\n[REPORT] %s\\n\", report.Scenario.Name)\n\tfmt.Printf(\"  Started:   %s\\n\", report.Started.Format(\"2006-01-02 15:04:05\"))\n\tfmt.Printf(\"  Finished:  %s\\n\", report.Finished.Format(\"2006-01-02 15:04:05\"))\n\tfmt.Printf(\"  Succeeded: %d\\n\", report.Succeeded)\n\tfmt.Printf(\"  Failed:    %d\\n\", report.Failed)\n\tfmt.Println(\"[+] Full report written to /tmp/breach_report.json\")\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Set StopOnFailure for Persistence Stage",
+        "context": "In the Persistence stage definition, set the StopOnFailure field to true, because the engine must abort if persistence fails. The field is a bool named \"StopOnFailure\". Type exactly: \"StopOnFailure: true,\".",
+        "code_before": "{\n\tTactic:     \"TA0003 Persistence\",\n\tTechniques: []string{\"T1053\"},\n",
+        "code_after": "},",
+        "correct_answer": "\tStopOnFailure: true,"
+      },
+      {
+        "type": "concept",
+        "heading": "Extending the Engine Safely",
+        "body": "You now have a working breach simulation engine. Here's what separates a toy from a production purple team tool:\n\nTechnique isolation: each TTPFunc should run in a subprocess or sandboxed context where possible. A technique that panics shouldn't take down the entire engine. Wrap every dispatch in a recover() block and convert panics to failed TTPResults.\n\nDetection mapping: extend TTPResult with a DetectionExpected field — a list of SIEM rule IDs or alert names that should fire for this technique. After the run, your report shows not just what executed, but what detections were and weren't triggered. That gap analysis is the whole point of purple teaming.\n\nCleanup hooks: every technique that creates artifacts (files, registry keys, scheduled tasks) needs a matching cleanup function. Add a Cleanup TTPFunc field to your registry entry and run it after the stage completes, regardless of success. Leave the target host in the state you found it.\n\nRate limiting and jitter: add a global config struct with MinJitter and MaxJitter duration fields. The dispatcher sleeps a random duration in that range before each technique. Without jitter, your engine looks like a scanner to behavioral EDR — and you've just tested whether defenders can catch a noisy script kiddie, not a real APT."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Add Detection Field to TTPResult",
+        "context": "Extend the TTPResult struct with a field to store expected detection rule IDs. Add a field named \"DetectionsExpected\" of type \"[]string\". Type exactly: \"DetectionsExpected []string\".",
+        "code_before": "type TTPResult struct {\n\tTechniqueID string\n\tName        string\n\tSuccess     bool\n\tOutput      string\n\tDuration    time.Duration\n\tTimestamp   time.Time\n",
+        "code_after": "}",
+        "correct_answer": "\tDetectionsExpected []string"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Your breach simulation engine runs a three-stage scenario. The Persistence stage has StopOnFailure set to true. T1053 (Scheduled Task) fails because the test account lacks local admin rights. Which behavior does the engine exhibit?\n\nA) The engine logs the failure, skips the Persistence stage, and continues to Exfiltration\nB) The engine panics and terminates with a non-zero exit code\nC) The engine logs the failure and breaks out of the stage loop, skipping Exfiltration\nD) The engine retries T1053 up to three times before moving on",
+        "options": [
+          "Logs the failure, skips Persistence, and continues to Exfiltration",
+          "Panics and exits with a non-zero code",
+          "Logs the failure and breaks the stage loop, skipping Exfiltration",
+          "Retries T1053 up to three times before moving on"
+        ],
+        "correct": 2,
+        "hint": "Trace the StopOnFailure logic in the Run function — specifically what happens inside the stage loop when stageFailed is true and the flag is set."
+      }
+    ]
+  },
+  "mod_prog_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Variables Are Named Memory",
+        "body": "A variable is a named location in memory that holds a value. When you write x = 42 in Python, the interpreter allocates space for an integer object and binds the name x to it. This is different from a language like C, where the variable IS the memory location — but understanding the model matters because it explains why bugs happen.\n\nEvery variable has three things: a name (how you refer to it in code), a type (what kind of value it holds — integer, string, list), and a value (the actual data). In Python, the type is attached to the value, not the variable — you can rebind x to a string after it held an integer. In Go or C, the type is fixed at declaration time.\n\nWhy does this matter for security? Buffer overflows happen when you write more data into a memory location than its type allows. Type confusion bugs happen when code assumes a variable holds one type but it holds another. Understanding variables at this level is the foundation of understanding every memory-safety vulnerability you'll ever exploit or defend against."
+      },
+      {
+        "type": "concept",
+        "heading": "Types, Values & Memory Layout",
+        "body": "Python's built-in types: int (arbitrary precision integer), float (64-bit IEEE 754), str (immutable Unicode string), bool (True/False, subtype of int), bytes (raw byte sequence), list (mutable ordered sequence), dict (hash map), None (null singleton).\n\nMemory allocation in Python is managed by the interpreter. Small integers (-5 to 256) are cached — Python pre-allocates objects for them and reuses them, so id(1) == id(1) is always True. Strings are interned similarly. This is mostly invisible but bites you when you use 'is' instead of '==' for equality — 'is' compares memory addresses, not values.\n\nFor security-relevant memory work, bytes is what you'll use constantly — shellcode, network payloads, file parsing. Know that bytes objects are immutable; if you need to mutate a byte buffer in-place, use bytearray. The difference matters when you're building exploit payloads or parsing binary protocols."
+      },
+      {
+        "type": "code",
+        "heading": "Variables, Types & Bytes in Python",
+        "body": "This snippet demonstrates variable declaration, type inspection, and bytes manipulation — the primitives you'll use in every security tool you write.",
+        "code": "# Python variable fundamentals — with security-relevant context\n\n# Integer — Python ints are arbitrary precision (no overflow in pure Python)\nport = 8080\nprint(type(port))          # <class 'int'>\n\n# String — immutable, always Unicode in Python 3\nhost = \"192.168.1.1\"\n\n# Bytes — raw binary data; essential for network/exploit work\nshellcode = b\"\\x90\\x90\\x90\\xcc\"   # 3 NOPs + INT3 breakpoint\nprint(len(shellcode))             # 4 — each \\xNN is one byte\n\n# Bytearray — mutable bytes; use when you need to patch bytes in-place\nbuf = bytearray(b\"\\x00\" * 16)    # 16 null bytes — simulating a buffer\nbuf[0] = 0x41                    # Patch first byte to 'A' (0x41)\nbuf[1] = 0x42                    # Patch second byte to 'B'\nprint(buf[:4])                    # bytearray(b'AB\\x00\\x00')\n\n# Type conversion — critical when parsing binary protocols\nhex_val = \"0x41\"                  # String representation of a hex value\nint_val = int(hex_val, 16)        # Convert hex string to integer: 65\nchar_val = chr(int_val)           # Convert integer to character: 'A'\nprint(f\"{hex_val} -> {int_val} -> {char_val}\")\n\n# None — Python's null; check for it explicitly\nresult = None\nif result is None:                # Use 'is', not '==' for None checks\n    print(\"No result yet\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Declare a Bytes Variable",
+        "context": "Declare a variable named \"payload\" and assign it a bytes literal containing two NOP bytes (\\x90) followed by a breakpoint (\\xcc). The value must be exactly \"b'\\x90\\x90\\xcc'\". Type exactly: \"payload = b'\\x90\\x90\\xcc'\".",
+        "code_before": "# Build a minimal shellcode stub\n",
+        "code_after": "\nprint(len(payload))  # Should print 3",
+        "correct_answer": "payload = b'\\x90\\x90\\xcc'"
+      },
+      {
+        "type": "code",
+        "heading": "Memory Allocation Patterns",
+        "body": "This snippet shows Python's integer caching, the difference between 'is' and '==', and how to inspect memory addresses — directly relevant when reasoning about object identity in exploit tooling.",
+        "code": "import sys\n\n# Python caches small integers (-5 to 256) — same object in memory\na = 256\nb = 256\nprint(a is b)    # True — same cached object\nprint(id(a))     # Memory address of the integer 256\n\n# Large integers are NOT cached — different objects\nx = 1000\ny = 1000\nprint(x is y)    # False — two separate objects (in CPython, usually)\nprint(x == y)    # True — same value\n\n# Memory size of objects — useful for understanding payload sizing\nprint(sys.getsizeof(0))              # 28 bytes — Python int overhead\nprint(sys.getsizeof(b\"A\" * 100))    # 133 bytes — bytes object overhead + 100\nprint(sys.getsizeof(bytearray(100))) # 157 bytes — bytearray has extra overhead\n\n# Mutable vs immutable — why this matters for buffer building\noriginal = b\"\\x41\\x42\\x43\"         # Immutable bytes\ntry:\n    original[0] = 0x44              # TypeError: bytes object does not support item assignment\nexcept TypeError as e:\n    print(f\"Can't mutate bytes: {e}\")\n\nmutable = bytearray(original)       # Convert to mutable bytearray\nmutable[0] = 0x44                   # Now we can patch it\nprint(bytes(mutable))               # b'DAC' — first byte patched"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Convert Bytes to Bytearray",
+        "context": "Given an immutable bytes variable named \"raw\" containing b'\\x41\\x42\\x43', convert it to a mutable bytearray and assign the result to a variable named \"buf\". Use the \"bytearray()\" constructor. Type exactly: \"buf = bytearray(raw)\".",
+        "code_before": "raw = b\"\\x41\\x42\\x43\"\n",
+        "code_after": "\nbuf[0] = 0x44\nprint(buf)  # bytearray(b'DAC')",
+        "correct_answer": "buf = bytearray(raw)"
+      },
+      {
+        "type": "concept",
+        "heading": "Scope, Mutability & Gotchas",
+        "body": "Python has three main scopes: local (inside a function), global (module level), and built-in (Python's own names). The LEGB rule — Local, Enclosing, Global, Built-in — is the order Python searches for a name. If you assign to a variable inside a function without declaring it global, Python creates a new local variable and the outer one is untouched. Miss this and your exploit script silently fails to update state.\n\nMutable default arguments are a classic Python trap. def f(buf=[]): buf.append(1) — the list is created once at function definition time, not on each call. Every call shares the same list object. In security tooling, this can cause payload contamination across calls. Always use None as the default and create the mutable inside the function.\n\nThe bytes vs str distinction bites everyone: socket.send() needs bytes, not str. If you pass a string, you get a TypeError at runtime. Always encode strings explicitly: data.encode('utf-8') or use a bytes literal. Mixing them silently was a Python 2 behavior — Python 3 is strict, which is correct, but requires discipline."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Encode a String to Bytes",
+        "context": "You have a string variable named \"cmd\" containing the value \"whoami\". Convert it to a UTF-8 bytes object and assign the result to a variable named \"payload\". Use the string method \".encode()\" with argument \"'utf-8'\". Type exactly: \"payload = cmd.encode('utf-8')\".",
+        "code_before": "cmd = \"whoami\"\n",
+        "code_after": "\nprint(type(payload))   # <class 'bytes'>\nprint(payload)         # b'whoami'",
+        "correct_answer": "payload = cmd.encode('utf-8')"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You're writing a Python function that builds a network payload. You want to modify individual bytes before sending. You start with:\n\n    data = b\"\\x00\\x01\\x02\\x03\"\n    data[2] = 0xFF\n\nThis raises a TypeError. What is the minimal correct fix?\n\nA) Use data = str(data) to convert to a mutable type\nB) Use data = bytearray(b\"\\x00\\x01\\x02\\x03\") instead of bytes\nC) Use data = list(b\"\\x00\\x01\\x02\\x03\") and index into the list\nD) Bytes objects support item assignment in Python 3.10+",
+        "options": [
+          "Use data = str(data) to convert to a mutable type",
+          "Use data = bytearray(b\"\\x00\\x01\\x02\\x03\") instead of bytes",
+          "Use data = list(b\"\\x00\\x01\\x02\\x03\") and index into the list",
+          "Bytes support item assignment in Python 3.10+"
+        ],
+        "correct": 1,
+        "hint": "Recall which Python type is the mutable counterpart to bytes, introduced in this lesson specifically for in-place buffer patching."
+      }
+    ]
+  },
+  "mod_prog_2": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Control Flow Is Execution Logic",
+        "body": "Control flow determines which lines of code run, how many times, and under what conditions. Every program — from a login form to a shellcode loader — is fundamentally a control flow problem. Understanding it deeply means you can read unfamiliar code and predict its behavior without running it. That skill is equally useful for writing exploits and for reverse engineering ones.\n\nPython has three primary control flow mechanisms: conditionals (if/elif/else), loops (for and while), and exception handling (try/except). Each has idiomatic uses and common misuses. A for loop that should be a list comprehension, or a while loop with a missing break, are bugs that security tools inherit from general Python code. Know the difference.\n\nIn security contexts, control flow errors are vulnerability classes: off-by-one errors in loop bounds, unchecked conditionals on authentication paths, infinite loops in parsers. Writing correct control flow is not just style — it's the difference between a working tool and a segfault."
+      },
+      {
+        "type": "concept",
+        "heading": "Loops, Conditionals & Iteration",
+        "body": "Python's for loop iterates over any iterable — lists, ranges, bytes, file lines, generator expressions. range(n) gives you integers 0 to n-1. range(start, stop, step) gives you a slice of integers. Iterating over bytes gives you integers (each byte as an int), not characters — remember this when parsing binary data.\n\nThe while loop runs as long as its condition is true. The canonical network tool pattern is while True with a break on a sentinel value — reading from a socket until the connection closes. The danger: forget the break condition and you've written an infinite loop that locks your process.\n\nConditionals in Python are clean but have traps. Truthiness: empty string, 0, None, [], {}, b'' are all falsy. A check like if data: passes for any non-empty, non-zero value. This is convenient until your code needs to distinguish between 0 and None — then you must use explicit comparisons (if data is not None, if data != 0). In protocol parsers, this distinction is the difference between correctly handling a zero-length payload and silently dropping it."
+      },
+      {
+        "type": "code",
+        "heading": "Loops and Conditionals in Python",
+        "body": "This snippet demonstrates the core control flow patterns you'll use in network tools and binary parsers — including the byte iteration trap and while-True socket pattern.",
+        "code": "# Control flow fundamentals — security tool context\n\n# for loop over a range — port scanning range\nfor port in range(1, 1025):        # 1 to 1024 inclusive\n    if port == 80 or port == 443:  # Conditional inside loop\n        print(f\"Web port: {port}\")\n\n# Iterating over bytes — each element is an int, not a char\nshellcode = b\"\\x41\\x42\\x90\\x90\\xcc\"\nfor byte in shellcode:\n    print(hex(byte), end=\" \")      # 0x41 0x42 0x90 0x90 0xcc\nprint()                            # Newline after byte dump\n\n# enumerate() — when you need both index and value\nfor i, byte in enumerate(shellcode):\n    if byte == 0x90:               # Find NOP sled positions\n        print(f\"NOP at offset {i}\")\n\n# while True with break — canonical socket read pattern\nimport socket\ndef read_until(sock, delimiter=b\"\\n\", max_bytes=4096):\n    buf = b\"\"\n    while True:                    # Run until break\n        chunk = sock.recv(1)       # Read one byte at a time\n        if not chunk:              # Empty bytes = connection closed\n            break\n        buf += chunk\n        if delimiter in buf:       # Found the delimiter\n            break\n        if len(buf) >= max_bytes:  # Safety: prevent unbounded read\n            break\n    return buf"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Iterate Over Bytes with Enumerate",
+        "context": "Write a for loop that iterates over a bytes variable named \"payload\" using \"enumerate()\", unpacking the index into \"i\" and the byte value into \"b\". Type exactly: \"for i, b in enumerate(payload):\".",
+        "code_before": "payload = b\"\\x90\\x90\\xcc\\x41\"\n",
+        "code_after": "\n    print(f\"offset {i}: {hex(b)}\")",
+        "correct_answer": "for i, b in enumerate(payload):"
+      },
+      {
+        "type": "code",
+        "heading": "Conditional Logic in Protocol Parsing",
+        "body": "Real security tools live or die by their conditional logic. Here's a minimal packet type dispatcher — the kind of pattern you'll find in every network tool from Scapy plugins to custom C2 implant parsers.",
+        "code": "# Minimal protocol parser using conditionals\n# Simulates parsing a simple TLV (Type-Length-Value) binary protocol\n\ndef parse_tlv(data: bytes) -> dict:\n    \"\"\"Parse a TLV frame: 1 byte type, 1 byte length, N bytes value.\"\"\"\n    if len(data) < 2:              # Guard: not enough bytes for header\n        return {\"error\": \"frame too short\"}\n\n    msg_type = data[0]             # First byte: message type\n    msg_len  = data[1]             # Second byte: payload length\n\n    if len(data) < 2 + msg_len:   # Guard: payload claims more bytes than we have\n        return {\"error\": \"truncated payload\"}\n\n    payload = data[2:2 + msg_len]  # Slice exactly msg_len bytes\n\n    # Dispatch on message type — elif chain is the idiomatic switch statement\n    if msg_type == 0x01:\n        return {\"type\": \"PING\", \"payload\": payload}\n    elif msg_type == 0x02:\n        return {\"type\": \"CMD\", \"payload\": payload.decode(\"utf-8\", errors=\"replace\")}\n    elif msg_type == 0xFF:\n        return {\"type\": \"BEACON\", \"payload\": payload.hex()}  # Hex-encode opaque data\n    else:\n        return {\"type\": \"UNKNOWN\", \"raw_type\": hex(msg_type), \"payload\": payload}\n\n# Test it\nframe = b\"\\x02\\x06whoami\"          # Type=CMD, Length=6, Value=\"whoami\"\nresult = parse_tlv(frame)\nprint(result)                      # {'type': 'CMD', 'payload': 'whoami'}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Guard Against Short Frames",
+        "context": "Inside the parse_tlv function, add a guard that returns an error dict if the data is too short to contain a header. The condition should check \"len(data) < 2\" and return \"{'error': 'frame too short'}\". Type exactly: \"if len(data) < 2:\".",
+        "code_before": "def parse_tlv(data: bytes) -> dict:\n",
+        "code_after": "\n        return {\"error\": \"frame too short\"}",
+        "correct_answer": "    if len(data) < 2:"
+      },
+      {
+        "type": "concept",
+        "heading": "Loop Bugs & Off-By-One Errors",
+        "body": "Off-by-one errors are the most common loop bug and a genuine vulnerability class. range(n) gives 0 to n-1 — that final -1 catches people constantly. If you mean to process n items and write range(1, n) instead of range(n), you silently skip the first item. In a byte parser, that skipped byte corrupts every subsequent offset.\n\nThe classic off-by-one in a while loop: while i <= len(buf) instead of while i < len(buf). On the last iteration, buf[i] accesses index len(buf), which raises an IndexError in Python — but in C, it silently reads one byte past the buffer. That's a read primitive in an exploit.\n\nBreak and continue are your tools for loop control. break exits the entire loop; continue skips to the next iteration. Misplacing a break inside a nested conditional — inside an if inside a for — exits only the for loop, not any outer while. If your loop isn't terminating when you expect, trace every break statement and verify which loop it actually exits.\n\nList comprehensions and generator expressions replace most simple loops in idiomatic Python. [hex(b) for b in shellcode] is cleaner and faster than a for loop building a list. But they can't contain break or continue — if you need those, use a regular loop."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Extract Non-NOP Bytes with Comprehension",
+        "context": "Use a list comprehension to build a list of all bytes from a bytes variable named \"shellcode\" that are NOT equal to 0x90 (NOP). Assign the result to a variable named \"filtered\". Use the expression \"[b for b in shellcode if b != 0x90]\". Type exactly: \"filtered = [b for b in shellcode if b != 0x90]\".",
+        "code_before": "shellcode = b\"\\x90\\x90\\x41\\x90\\xcc\"\n",
+        "code_after": "\nprint(filtered)  # [0x41, 0xcc] as integers",
+        "correct_answer": "filtered = [b for b in shellcode if b != 0x90]"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You're parsing a binary buffer where each record is 4 bytes long. You write:\n\n    for i in range(1, len(buf), 4):\n        record = buf[i:i+4]\n\nYour test buffer has 12 bytes. You expect 3 records but only get 2. What is the bug?\n\nA) The slice buf[i:i+4] should be buf[i:i+3]\nB) range() should start at 0, not 1 — the first record is being skipped\nC) You should use a while loop for binary parsing\nD) len(buf) should be len(buf) - 4 to avoid the last record",
+        "options": [
+          "The slice buf[i:i+4] should be buf[i:i+3]",
+          "range() starts at 1 — the first record is being skipped",
+          "Binary parsing requires a while loop, not for",
+          "len(buf) should be len(buf) - 4"
+        ],
+        "correct": 1,
+        "hint": "Recall where range() starts and what offset the first record lives at in a zero-indexed byte buffer — think about what index 0 contains."
+      }
+    ]
+  }
+}

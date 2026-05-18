@@ -2078,7 +2078,7 @@ function LandingScreen({ onEnterAuth }) {
   // SEO: update document metadata when this screen mounts
   useEffect(() => {
     document.title =
-      "Hacklingo — Duolingo for Hackers · Learn Cybersecurity Free";
+      "Hacklingo — Gamified Cybersecurity Training · Learn Hacking Free";
 
     const ensureMeta = (selector, attrs) => {
       let el = document.querySelector(selector);
@@ -2096,7 +2096,7 @@ function LandingScreen({ onEnterAuth }) {
     });
     ensureMeta('meta[property="og:title"]', {
       property: "og:title",
-      content: "Hacklingo — Duolingo for Hackers",
+      content: "Hacklingo — Gamified Cybersecurity Training",
     });
     ensureMeta('meta[property="og:description"]', {
       property: "og:description",
@@ -2218,7 +2218,7 @@ function LandingScreen({ onEnterAuth }) {
             fontWeight: 300,
           }}
         >
-          Duolingo for hackers.
+          Learn cybersecurity like a game.
         </p>
         <p
           style={{
@@ -2228,7 +2228,7 @@ function LandingScreen({ onEnterAuth }) {
             fontFamily: "monospace",
           }}
         >
-          5-minute lessons. Real skills. Zero fluff.
+          5-minute missions. Real skills. Zero fluff.
         </p>
 
         <div
@@ -6358,7 +6358,7 @@ function OperatorScreen({
                 return;
               }
               const shareUrl = `${APP_URL}/?ref=${code}`;
-              const shareText = `Join me on Hacklingo — Duolingo for hackers. Use my code ${code} for bonus XP. ${shareUrl}`;
+              const shareText = `Join me on Hacklingo — gamified cybersecurity training with streaks, XP, and real hacking missions. Use my code ${code} for bonus XP. ${shareUrl}`;
               try {
                 if (navigator.share) {
                   await navigator.share({

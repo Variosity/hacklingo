@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from "react";
 import { supabase } from "./supabaseClient";
 import { StatusBar, Style } from "@capacitor/status-bar";
 import { Capacitor } from "@capacitor/core";
+import { NativeAudio } from "@capacitor-community/native-audio";
 
 // ── THEME ENGINE ─────────────────────────────────────────────────────────────
 const THEMES = {
@@ -98,6 +99,77 @@ const THEMES = {
 };
 
 // ── BRUTAL PROGRESSION & LORE ────────────────────────────────────────────────
+// ── NAME FILTER ────────────────────────────────────────────────────────────
+// Applied to both usernames and squad names at the point of change.
+const BANNED_WORDS = [
+  "nigger",
+  "nigga",
+  "faggot",
+  "fag",
+  "chink",
+  "spic",
+  "wetback",
+  "kike",
+  "gook",
+  "tranny",
+  "retard",
+  "cunt",
+  "rape",
+  "rapist",
+  "pedo",
+  "pedophile",
+  "nonce",
+  "hitler",
+  "nazi",
+  "isis",
+  "jihad",
+  "terrorist",
+  "genocide",
+  "admin",
+  "hacklingo",
+  "support",
+  "moderator",
+  "official",
+  "staff",
+];
+
+const validateName = (raw, type = "username") => {
+  const v = raw.trim();
+  const min = type === "squad" ? 3 : 3;
+  const max = type === "squad" ? 32 : 20;
+
+  if (v.length < min)
+    return `${type === "squad" ? "Squad name" : "Username"} must be at least ${min} characters`;
+  if (v.length > max)
+    return `${type === "squad" ? "Squad name" : "Username"} must be ${max} characters or fewer`;
+
+  // Allowed chars: letters, numbers, underscores, hyphens, spaces (squads only)
+  const allowed = type === "squad" ? /^[a-zA-Z0-9 _\-]+$/ : /^[a-zA-Z0-9_\-]+$/;
+  if (!allowed.test(v)) {
+    return type === "squad"
+      ? "Squad name can only contain letters, numbers, spaces, underscores, and hyphens"
+      : "Username can only contain letters, numbers, underscores, and hyphens";
+  }
+
+  // Can't be all numbers
+  if (/^\d+$/.test(v)) return "Name can't be all numbers";
+
+  // Can't start or end with special chars
+  if (/^[_\-\s]|[_\-\s]$/.test(v))
+    return "Name can't start or end with a space, underscore, or hyphen";
+
+  // No consecutive special chars
+  if (/[_\-\s]{2,}/.test(v)) return "No consecutive special characters";
+
+  // Profanity check (case-insensitive, whole-word)
+  const lower = v.toLowerCase().replace(/[_\-\s]/g, "");
+  for (const word of BANNED_WORDS) {
+    if (lower.includes(word)) return "That name isn't allowed";
+  }
+
+  return null; // null = valid
+};
+
 const RANKS = [
   { id: 0, name: "Ghost", min: 0, icon: "👻", color: "#888" },
   { id: 1, name: "Initiate", min: 1500, icon: "🔰", color: "#4ade80" },
@@ -196,14 +268,16 @@ const withTimeout = (promise, ms, label) =>
 const APP_URL = "https://hacklingo.tech";
 
 // ── ACHIEVEMENTS ───────────────────────────────────────────────────────────
-// Add new ones here — check function gets the userState and returns boolean
+// reward: { xp, hashes } — claimed once via the modal claim button
 const ACHIEVEMENTS = [
+  // ── MISSION COMPLETION ─────────────────────────────────────────────────
   {
     id: "first_blood",
     name: "First Blood",
     icon: "🩸",
     desc: "Complete your first mission",
     check: (u) => (u.completedModules?.length || 0) >= 1,
+    reward: { xp: 100, hashes: 50 },
   },
   {
     id: "five_alive",
@@ -211,6 +285,31 @@ const ACHIEVEMENTS = [
     icon: "✋",
     desc: "Complete 5 missions",
     check: (u) => (u.completedModules?.length || 0) >= 5,
+    reward: { xp: 250, hashes: 125 },
+  },
+  {
+    id: "double_digits",
+    name: "Double Digits",
+    icon: "🔟",
+    desc: "Complete 10 missions",
+    check: (u) => (u.completedModules?.length || 0) >= 10,
+    reward: { xp: 500, hashes: 250 },
+  },
+  {
+    id: "quarter_century",
+    name: "Quarter Century",
+    icon: "🎯",
+    desc: "Complete 25 missions",
+    check: (u) => (u.completedModules?.length || 0) >= 25,
+    reward: { xp: 1000, hashes: 500 },
+  },
+  {
+    id: "fifty_missions",
+    name: "Half Century",
+    icon: "⚔️",
+    desc: "Complete 50 missions",
+    check: (u) => (u.completedModules?.length || 0) >= 50,
+    reward: { xp: 2000, hashes: 1000 },
   },
   {
     id: "centurion",
@@ -218,6 +317,24 @@ const ACHIEVEMENTS = [
     icon: "💯",
     desc: "Complete 100 missions",
     check: (u) => (u.completedModules?.length || 0) >= 100,
+    reward: { xp: 5000, hashes: 2500 },
+  },
+  {
+    id: "two_fifty",
+    name: "Iron Resolve",
+    icon: "🦾",
+    desc: "Complete 250 missions",
+    check: (u) => (u.completedModules?.length || 0) >= 250,
+    reward: { xp: 10000, hashes: 5000 },
+  },
+  // ── STREAK MILESTONES ──────────────────────────────────────────────────
+  {
+    id: "three_day",
+    name: "Three Day Rule",
+    icon: "📅",
+    desc: "Maintain a 3-day streak",
+    check: (u) => (u.persistence_streak || 0) >= 3,
+    reward: { xp: 150, hashes: 75 },
   },
   {
     id: "week_warrior",
@@ -225,6 +342,15 @@ const ACHIEVEMENTS = [
     icon: "🔥",
     desc: "7-day streak",
     check: (u) => (u.persistence_streak || 0) >= 7,
+    reward: { xp: 500, hashes: 250 },
+  },
+  {
+    id: "two_weeks",
+    name: "Fortnight Ghost",
+    icon: "👻",
+    desc: "14-day streak",
+    check: (u) => (u.persistence_streak || 0) >= 14,
+    reward: { xp: 1000, hashes: 500 },
   },
   {
     id: "month_monk",
@@ -232,6 +358,23 @@ const ACHIEVEMENTS = [
     icon: "🧘",
     desc: "30-day streak",
     check: (u) => (u.persistence_streak || 0) >= 30,
+    reward: { xp: 3000, hashes: 1500 },
+  },
+  {
+    id: "sixty_day",
+    name: "Machine Mind",
+    icon: "🤖",
+    desc: "60-day streak",
+    check: (u) => (u.persistence_streak || 0) >= 60,
+    reward: { xp: 6000, hashes: 3000 },
+  },
+  {
+    id: "hundred_day",
+    name: "Century Operative",
+    icon: "💫",
+    desc: "100-day streak",
+    check: (u) => (u.persistence_streak || 0) >= 100,
+    reward: { xp: 10000, hashes: 5000 },
   },
   {
     id: "year_legend",
@@ -239,20 +382,24 @@ const ACHIEVEMENTS = [
     icon: "🏆",
     desc: "365-day streak",
     check: (u) => (u.persistence_streak || 0) >= 365,
+    reward: { xp: 50000, hashes: 25000 },
   },
+  // ── XP MILESTONES ──────────────────────────────────────────────────────
   {
     id: "initiate",
     name: "Made Initiate",
     icon: "🔰",
     desc: "Reach 1,500 XP",
     check: (u) => (u.xp || 0) >= 1500,
+    reward: { xp: 0, hashes: 200 },
   },
   {
     id: "operative",
     name: "Operative",
-    icon: "🎯",
+    icon: "🎖️",
     desc: "Reach 10,000 XP",
     check: (u) => (u.xp || 0) >= 10000,
+    reward: { xp: 0, hashes: 1000 },
   },
   {
     id: "phantom",
@@ -260,13 +407,32 @@ const ACHIEVEMENTS = [
     icon: "🌑",
     desc: "Reach 50,000 XP",
     check: (u) => (u.xp || 0) >= 50000,
+    reward: { xp: 0, hashes: 3000 },
   },
+  {
+    id: "apex_operator",
+    name: "Apex Operator",
+    icon: "🦅",
+    desc: "Reach 100,000 XP",
+    check: (u) => (u.xp || 0) >= 100000,
+    reward: { xp: 0, hashes: 7500 },
+  },
+  {
+    id: "grandmaster",
+    name: "Grandmaster",
+    icon: "👑",
+    desc: "Reach 250,000 XP",
+    check: (u) => (u.xp || 0) >= 250000,
+    reward: { xp: 0, hashes: 20000 },
+  },
+  // ── HASH WEALTH ────────────────────────────────────────────────────────
   {
     id: "hash_collector",
     name: "Hash Collector",
     icon: "💰",
     desc: "Accumulate 5,000 Hashes",
     check: (u) => (u.hashes || 0) >= 5000,
+    reward: { xp: 300, hashes: 0 },
   },
   {
     id: "hash_hoarder",
@@ -274,13 +440,49 @@ const ACHIEVEMENTS = [
     icon: "🪙",
     desc: "Accumulate 25,000 Hashes",
     check: (u) => (u.hashes || 0) >= 25000,
+    reward: { xp: 1000, hashes: 0 },
   },
+  {
+    id: "hash_whale",
+    name: "Hash Whale",
+    icon: "🐋",
+    desc: "Accumulate 100,000 Hashes",
+    check: (u) => (u.hashes || 0) >= 100000,
+    reward: { xp: 5000, hashes: 0 },
+  },
+  // ── BOSS KILLS ─────────────────────────────────────────────────────────
+  {
+    id: "first_boss",
+    name: "Boss Slayer",
+    icon: "💀",
+    desc: "Complete your first boss project",
+    check: (u) => (u.bossesCompleted || 0) >= 1,
+    reward: { xp: 500, hashes: 250 },
+  },
+  {
+    id: "five_bosses",
+    name: "Reaper",
+    icon: "☠️",
+    desc: "Complete 5 boss projects",
+    check: (u) => (u.bossesCompleted || 0) >= 5,
+    reward: { xp: 2000, hashes: 1000 },
+  },
+  {
+    id: "ten_bosses",
+    name: "Death Dealer",
+    icon: "🔱",
+    desc: "Complete 10 boss projects",
+    check: (u) => (u.bossesCompleted || 0) >= 10,
+    reward: { xp: 5000, hashes: 2500 },
+  },
+  // ── SOCIAL ─────────────────────────────────────────────────────────────
   {
     id: "recruiter",
     name: "Recruiter",
     icon: "🤝",
     desc: "Refer your first operator",
     check: (u) => (u.referral_count || 0) >= 1,
+    reward: { xp: 500, hashes: 500 },
   },
   {
     id: "squad_builder",
@@ -288,20 +490,64 @@ const ACHIEVEMENTS = [
     icon: "👥",
     desc: "Refer 5 operators",
     check: (u) => (u.referral_count || 0) >= 5,
+    reward: { xp: 2000, hashes: 1500 },
   },
   {
     id: "kingpin",
     name: "Kingpin",
-    icon: "👑",
+    icon: "💍",
     desc: "Refer 25 operators",
     check: (u) => (u.referral_count || 0) >= 25,
+    reward: { xp: 10000, hashes: 7500 },
   },
+  {
+    id: "first_follower",
+    name: "Social Signal",
+    icon: "📡",
+    desc: "Gain your first follower",
+    check: (u) => (u.follower_count || 0) >= 1,
+    reward: { xp: 200, hashes: 100 },
+  },
+  {
+    id: "ten_followers",
+    name: "Rising Threat",
+    icon: "📈",
+    desc: "Gain 10 followers",
+    check: (u) => (u.follower_count || 0) >= 10,
+    reward: { xp: 1000, hashes: 500 },
+  },
+  // ── PATH & IDENTITY ────────────────────────────────────────────────────
   {
     id: "path_chosen",
     name: "Path Chosen",
     icon: "🗺️",
     desc: "Pick a team alignment",
     check: (u) => u.path && u.path !== "unassigned",
+    reward: { xp: 200, hashes: 100 },
+  },
+  {
+    id: "red_team",
+    name: "Crimson Operative",
+    icon: "🔴",
+    desc: "Join the Red Team",
+    check: (u) => u.path === "red",
+    reward: { xp: 300, hashes: 150 },
+  },
+  {
+    id: "blue_team",
+    name: "Blue Sentinel",
+    icon: "🔵",
+    desc: "Join the Blue Team",
+    check: (u) => u.path === "blue",
+    reward: { xp: 300, hashes: 150 },
+  },
+  {
+    id: "purple_team",
+    name: "Purple Phantom",
+    icon: "🟣",
+    desc: "Join the Purple Team",
+    check: (u) => u.path === "purple",
+    reward: { xp: 300, hashes: 150 },
   },
   {
     id: "supporter",
@@ -309,13 +555,72 @@ const ACHIEVEMENTS = [
     icon: "💎",
     desc: "Become a Root Access supporter",
     check: (u) => u.is_supporter === true,
+    reward: { xp: 2000, hashes: 1000 },
   },
+  // ── GEAR ──────────────────────────────────────────────────────────────
   {
     id: "burner_carrier",
     name: "Burner Carrier",
     icon: "📱",
     desc: "Stockpile 3 burner phones",
     check: (u) => (u.burner_phones || 0) >= 3,
+    reward: { xp: 300, hashes: 150 },
+  },
+  {
+    id: "overclocker",
+    name: "Overclocker",
+    icon: "⚡",
+    desc: "Use an Overclock boost",
+    check: (u) => (u.overclock_uses || 0) >= 1,
+    reward: { xp: 200, hashes: 100 },
+  },
+  {
+    id: "thread_addict",
+    name: "Thread Addict",
+    icon: "🧵",
+    desc: "Purchase Threads 10 times",
+    check: (u) => (u.thread_purchases || 0) >= 10,
+    reward: { xp: 500, hashes: 250 },
+  },
+  // ── DEDICATION ─────────────────────────────────────────────────────────
+  {
+    id: "early_adopter",
+    name: "Early Adopter",
+    icon: "🚀",
+    desc: "Join in the first 30 days of launch",
+    check: (u) => {
+      if (!u.created_at) return false;
+      const launchDate = new Date("2026-05-01");
+      const joinDate = new Date(u.created_at);
+      const diffDays = (joinDate - launchDate) / (1000 * 60 * 60 * 24);
+      return diffDays >= 0 && diffDays <= 30; // joined after launch, within 30 days
+    },
+    reward: { xp: 1000, hashes: 500 },
+  },
+  {
+    id: "night_owl",
+    name: "Night Owl",
+    icon: "🦉",
+    // Checked in handleLessonComplete: if local hour is 0-4, sets night_owl flag on profile
+    desc: "Complete a mission between midnight and 4 AM",
+    check: (u) => u.night_owl === true,
+    reward: { xp: 250, hashes: 125 },
+  },
+  {
+    id: "speed_runner",
+    name: "Speed Runner",
+    icon: "💨",
+    desc: "Complete 3 missions in one day",
+    check: (u) => (u.max_daily_lessons || 0) >= 3,
+    reward: { xp: 500, hashes: 250 },
+  },
+  {
+    id: "no_mercy",
+    name: "No Mercy",
+    icon: "🗡️",
+    desc: "Complete 5 missions in one day",
+    check: (u) => (u.max_daily_lessons || 0) >= 5,
+    reward: { xp: 1500, hashes: 750 },
   },
 ];
 
@@ -326,13 +631,19 @@ const SOUND_FILES = {
   lesson_complete: "/sounds/lesson_complete.mp3",
   correct_answer: "/sounds/correct_answer.mp3",
   daily_reward: "/sounds/daily_reward.mp3",
+  achievement: "/sounds/achievement.mp3",
+  claim_achievement: "/sounds/claim_achievement.mp3", // drop claim_achievement.mp3 in /public/sounds/ — falls back silently if missing
+  rank_up: "/sounds/rank_up.mp3",
+  purchase: "/sounds/purchase.mp3",
+  overclock: "/sounds/overclock.mp3",
 };
 
 // Cache audio elements so we don't re-fetch each play
 const _audioCache = {};
 const playSound = (name) => {
-  // Don't play sounds if user has muted via system or hasn't enabled them yet
   try {
+    // Respect the user's sound preference (set via settings toggle)
+    if (localStorage.getItem("hl_sounds_off") === "1") return;
     const src = SOUND_FILES[name];
     if (!src) return;
     if (!_audioCache[name]) {
@@ -340,13 +651,10 @@ const playSound = (name) => {
       _audioCache[name].volume = 0.6;
       _audioCache[name].preload = "auto";
     }
-    // Reset to start in case it's already playing
     _audioCache[name].currentTime = 0;
     const playPromise = _audioCache[name].play();
-    if (playPromise) playPromise.catch(() => {}); // ignore autoplay restrictions
-  } catch (e) {
-    // Silently fail — sounds are non-critical
-  }
+    if (playPromise) playPromise.catch(() => {});
+  } catch (e) {}
 };
 
 // ── UI COMPONENTS ───────────────────────────────────────────────────────────
@@ -647,12 +955,26 @@ function AuthScreen() {
                 }}
               />
               <span>
-                I am 13+ and agree to use Hacklingo for{" "}
-                <strong style={{ color: "#facc15" }}>
-                  authorized learning only
-                </strong>
-                . I will not apply techniques to systems I don't own or have
-                explicit written permission to test.
+                I am 13+ and agree to the{" "}
+                <a
+                  href="/terms"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "#00ff88", textDecoration: "underline" }}
+                >
+                  Terms of Service
+                </a>{" "}
+                and{" "}
+                <a
+                  href="/privacy"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: "#00ff88", textDecoration: "underline" }}
+                >
+                  Privacy Policy
+                </a>
+                . I will only apply techniques to systems I own or have explicit
+                written permission to test.
               </span>
             </label>
           </>
@@ -886,6 +1208,34 @@ function HomeScreen({
   const nextRank = getNextRank(userState.xp);
   const pathInfo = PATHS[userState.path];
   const nextMission = getNextMission(userState, curriculum);
+
+  // ── FOLLOWER ACTIVITY FEED ─────────────────────────────────────────────
+  const [activityFeed, setActivityFeed] = useState([]);
+  useEffect(() => {
+    let cancelled = false;
+    async function loadFeed() {
+      // Get IDs of people this user follows
+      const { data: follows } = await supabase
+        .from("user_follows")
+        .select("followed_id")
+        .eq("follower_id", userState.id)
+        .limit(50);
+      if (cancelled || !follows?.length) return;
+      const ids = follows.map((f) => f.followed_id);
+      // Get recent activity_feed rows for those users
+      const { data: events } = await supabase
+        .from("activity_feed")
+        .select("username, event_type, meta, created_at")
+        .in("user_id", ids)
+        .order("created_at", { ascending: false })
+        .limit(15);
+      if (!cancelled) setActivityFeed(events || []);
+    }
+    loadFeed();
+    return () => {
+      cancelled = true;
+    };
+  }, [userState.id]);
 
   return (
     <div style={{ padding: "24px 16px 80px" }}>
@@ -1184,6 +1534,77 @@ function HomeScreen({
         >
           You have completed all available modules for your path. Awaiting
           updates.
+        </div>
+      )}
+
+      {/* ── FOLLOWER ACTIVITY FEED ───────────────────────────────────────── */}
+      {activityFeed.length > 0 && (
+        <div style={{ marginTop: 28 }}>
+          <div
+            style={{
+              fontSize: 10,
+              color: "#888",
+              fontFamily: "monospace",
+              textTransform: "uppercase",
+              letterSpacing: 2,
+              marginBottom: 10,
+            }}
+          >
+            📡 Network Activity
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {activityFeed.map((ev, i) => {
+              const ago = Math.round(
+                (Date.now() - new Date(ev.created_at)) / 60000,
+              );
+              const agoStr =
+                ago < 60 ? `${ago}m ago` : `${Math.round(ago / 60)}h ago`;
+              let label = "";
+              if (ev.event_type === "lesson_complete")
+                label = `completed "${ev.meta?.module_title || "a mission"}"`;
+              else if (ev.event_type === "streak_milestone")
+                label = `hit a ${ev.meta?.days}-day streak 🔥`;
+              else if (ev.event_type === "rank_up")
+                label = `ranked up to ${ev.meta?.rank_name} ${ev.meta?.rank_icon || ""}`;
+              else label = ev.event_type.replace(/_/g, " ");
+              return (
+                <div
+                  key={i}
+                  style={{
+                    background: theme.surface,
+                    borderRadius: 8,
+                    padding: "8px 12px",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    border: "1px solid rgba(255,255,255,0.04)",
+                  }}
+                >
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 11,
+                      color: theme.text,
+                    }}
+                  >
+                    <span style={{ color: theme.accent }}>{ev.username}</span>{" "}
+                    {label}
+                  </span>
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 9,
+                      color: "#555",
+                      flexShrink: 0,
+                      marginLeft: 8,
+                    }}
+                  >
+                    {agoStr}
+                  </span>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>
@@ -1653,6 +2074,55 @@ function DailyRewardModal({ userState, onClose, theme, onClaim }) {
 }
 
 // ── THREAD REGENERATION TIMER MODAL ────────────────────────────────────────
+// ── INVITE TO SQUAD BUTTON ─────────────────────────────────────────────────
+function InviteToSquadButton({
+  inviteeId,
+  inviteeUsername,
+  squadId,
+  squadName,
+  inviteCode,
+  theme,
+}) {
+  const [status, setStatus] = useState("idle"); // idle | sending | sent | error
+  const handleInvite = async () => {
+    setStatus("sending");
+    // Write a squad invite notification row — invitee sees it on their next load
+    const { error } = await supabase.from("squad_invites").insert({
+      squad_id: squadId,
+      invited_user_id: inviteeId,
+      invite_code: inviteCode,
+    });
+    setStatus(error ? "error" : "sent");
+  };
+  return (
+    <button
+      onClick={handleInvite}
+      disabled={status !== "idle"}
+      style={{
+        width: "100%",
+        padding: "9px",
+        marginBottom: 8,
+        background: status === "sent" ? "transparent" : "#7c3aed",
+        border: status === "sent" ? "1px solid #7c3aed" : "none",
+        borderRadius: 8,
+        color: status === "sent" ? "#7c3aed" : "#fff",
+        fontFamily: "monospace",
+        fontSize: 10,
+        letterSpacing: 2,
+        fontWeight: "bold",
+        cursor: status !== "idle" ? "default" : "pointer",
+        opacity: status === "sending" ? 0.6 : 1,
+      }}
+    >
+      {status === "idle" &&
+        `👥 INVITE TO ${(squadName || "SQUAD").toUpperCase()}`}
+      {status === "sending" && "SENDING..."}
+      {status === "sent" && "✓ INVITE SENT"}
+      {status === "error" && "INVITE FAILED"}
+    </button>
+  );
+}
+
 function ThreadRegenModal({ userState, onClose, theme }) {
   const [, forceTick] = useState(0);
 
@@ -2694,14 +3164,18 @@ function LandingScreen({ onEnterAuth }) {
         </div>
         <div style={{ marginBottom: 8 }}>
           <a
-            href="#"
+            href="/privacy"
+            target="_blank"
+            rel="noopener noreferrer"
             style={{ color: "#666", textDecoration: "none", margin: "0 8px" }}
           >
             Privacy
           </a>
           ·
           <a
-            href="#"
+            href="/terms"
+            target="_blank"
+            rel="noopener noreferrer"
             style={{ color: "#666", textDecoration: "none", margin: "0 8px" }}
           >
             Terms
@@ -2719,6 +3193,15 @@ function LandingScreen({ onEnterAuth }) {
         <div style={{ color: "#333" }}>
           © 2026 Hacklingo. All operations classified.
         </div>
+        <div style={{ color: "#2a2a2a", marginTop: 8, fontSize: 10 }}>
+          Copyright concerns:{" "}
+          <a
+            href="mailto:dmca@hacklingo.tech"
+            style={{ color: "#333", textDecoration: "none" }}
+          >
+            dmca@hacklingo.tech
+          </a>
+        </div>
       </footer>
 
       <style>{`
@@ -2731,8 +3214,9 @@ function LandingScreen({ onEnterAuth }) {
 }
 
 // ── ACHIEVEMENTS MODAL ─────────────────────────────────────────────────────
-function AchievementsModal({ userState, onClose, theme }) {
+function AchievementsModal({ userState, onClose, onClaim, theme }) {
   const unlocked = userState?.unlocked_achievements || [];
+  const claimed = userState?.claimed_achievements || [];
   const unlockedCount = ACHIEVEMENTS.filter((a) =>
     unlocked.includes(a.id),
   ).length;
@@ -2767,7 +3251,30 @@ function AchievementsModal({ userState, onClose, theme }) {
           overflowY: "auto",
         }}
       >
-        <div style={{ textAlign: "center", marginBottom: 16 }}>
+        <div
+          style={{
+            position: "relative",
+            textAlign: "center",
+            marginBottom: 16,
+          }}
+        >
+          <button
+            onClick={onClose}
+            style={{
+              position: "absolute",
+              top: -8,
+              right: -8,
+              background: "transparent",
+              border: "none",
+              color: "#666",
+              fontSize: 20,
+              cursor: "pointer",
+              lineHeight: 1,
+              padding: 4,
+            }}
+          >
+            ✕
+          </button>
           <div style={{ fontSize: 40, marginBottom: 4 }}>🏆</div>
           <div
             style={{
@@ -2796,6 +3303,9 @@ function AchievementsModal({ userState, onClose, theme }) {
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {ACHIEVEMENTS.map((a) => {
             const isUnlocked = unlocked.includes(a.id);
+            const isClaimed = claimed.includes(a.id);
+            const hasReward =
+              a.reward && (a.reward.xp > 0 || a.reward.hashes > 0);
             return (
               <div
                 key={a.id}
@@ -2841,10 +3351,57 @@ function AchievementsModal({ userState, onClose, theme }) {
                   >
                     {a.desc}
                   </div>
+                  {hasReward && (
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "#facc15",
+                        marginTop: 3,
+                        fontFamily: "monospace",
+                      }}
+                    >
+                      {a.reward.xp > 0 && `+${a.reward.xp.toLocaleString()} XP`}
+                      {a.reward.xp > 0 && a.reward.hashes > 0 && "  "}
+                      {a.reward.hashes > 0 &&
+                        `+${a.reward.hashes.toLocaleString()} #`}
+                    </div>
+                  )}
                 </div>
-                {isUnlocked && (
+                {isUnlocked && hasReward ? (
+                  isClaimed ? (
+                    <div
+                      style={{
+                        fontSize: 12,
+                        color: "#555",
+                        fontFamily: "monospace",
+                        letterSpacing: 1,
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      CLAIMED
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() => onClaim && onClaim(a)}
+                      style={{
+                        padding: "6px 10px",
+                        background: "#facc15",
+                        color: "#000",
+                        border: "none",
+                        borderRadius: 6,
+                        fontFamily: "monospace",
+                        fontSize: 10,
+                        fontWeight: "bold",
+                        cursor: "pointer",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      CLAIM
+                    </button>
+                  )
+                ) : isUnlocked ? (
                   <div style={{ fontSize: 14, color: "#00ff88" }}>✓</div>
-                )}
+                ) : null}
               </div>
             );
           })}
@@ -3297,145 +3854,613 @@ function PasswordResetModal({ onClose, theme }) {
 function SkillTreeScreen({ userState, curriculum, theme, onOpenLesson }) {
   if (!userState || !curriculum.length) return null;
   const [briefingMission, setBriefingMission] = useState(null);
+  const [trackFilter, setTrackFilter] = useState("all");
+  // Open the phase that has the most recent incomplete module, falling back to phase 0
+  const getInitialOpenPhase = () => {
+    if (!userState?.completedModules?.length) return { 0: true };
+    const completedSet = new Set(userState.completedModules);
+    // Find the highest phase that has at least one completed module
+    let lastActivePhase = 0;
+    for (const track of curriculum) {
+      const hasCompleted = track.modules.some((m) => completedSet.has(m.id));
+      const hasIncomplete = track.modules.some((m) => !completedSet.has(m.id));
+      if (hasCompleted && hasIncomplete) {
+        lastActivePhase = Math.max(lastActivePhase, track.phase);
+      }
+    }
+    return { [lastActivePhase]: true };
+  };
+  const [openPhases, setOpenPhases] = useState(() => getInitialOpenPhase());
+
+  const togglePhase = (p) => {
+    setOpenPhases((prev) => ({ ...prev, [p]: !prev[p] }));
+  };
+
+  // Load seeded lesson IDs from lesson_cache so we can grey out anything not yet
+  // seeded. Fetches only the cache_key column (no steps payload), so it's fast
+  // even with hundreds of modules.
+  const [seededIds, setSeededIds] = useState(null); // null = still loading
+  useEffect(() => {
+    supabase
+      .from("lesson_cache")
+      .select("cache_key")
+      .then(({ data }) => {
+        setSeededIds(new Set((data || []).map((r) => r.cache_key)));
+      })
+      .catch(() => setSeededIds(new Set())); // on error, assume all missing (safe fallback)
+  }, []);
+
+  const PHASE_META = {
+    0: {
+      label: "Phase 0",
+      title: "The Wire",
+      desc: "Where every operator starts. Numeric systems, OS internals, terminal mastery.",
+    },
+    1: {
+      label: "Phase 1",
+      title: "Foundations",
+      desc: "Memory, binary thinking, Linux operations, and programming fundamentals.",
+    },
+    2: {
+      label: "Phase 2",
+      title: "Core Systems",
+      desc: "Tools, networking, cryptography, and real-world protocol work.",
+    },
+    3: {
+      label: "Phase 3",
+      title: "Specialization",
+      desc: "Your path diverges. Advanced offensive or defensive tooling.",
+    },
+    4: {
+      label: "Phase 4",
+      title: "Grandmaster",
+      desc: "Kernel internals, reverse engineering, and zero-day research.",
+    },
+  };
+
+  const MOD_TYPE = {
+    lesson: { icon: "📖", color: "#00ff88", label: "LESSON" },
+    standard: { icon: "📖", color: "#00ff88", label: "LESSON" },
+    lab: { icon: "🔬", color: "#22d3ee", label: "LAB" },
+    challenge: { icon: "⚡", color: "#facc15", label: "CHALLENGE" },
+    project: { icon: "🚀", color: "#a855f7", label: "PROJECT" },
+    boss: { icon: "💀", color: "#ef4444", label: "BOSS" },
+  };
+
+  const userPath = userState.path;
+  const hasPath = userPath && userPath !== "unassigned";
+
   const activeCurriculum = curriculum.filter(
     (track) =>
       !track.pathLock ||
       track.pathLock === "unassigned" ||
-      track.pathLock === userState.path,
+      track.pathLock === userPath,
+  );
+
+  // Apply filter tab
+  const filteredCurriculum = activeCurriculum.filter((track) => {
+    if (trackFilter === "all") return true;
+    if (trackFilter === "foundation")
+      return !track.pathLock || track.pathLock === "unassigned";
+    return track.pathLock === trackFilter;
+  });
+
+  // Group by phase
+  const byPhase = {};
+  for (const track of filteredCurriculum) {
+    const p = track.phase ?? 0;
+    if (!byPhase[p]) byPhase[p] = [];
+    byPhase[p].push(track);
+  }
+  const phases = Object.keys(byPhase)
+    .map(Number)
+    .sort((a, b) => a - b);
+
+  // Path label + color for tab
+  const PATH_CONFIG = {
+    red: { label: "🔴 RED TEAM", color: "#ef4444" },
+    blue: { label: "🔵 BLUE TEAM", color: "#3b82f6" },
+    purple: { label: "☯️ PURPLE TEAM", color: "#a855f7" },
+  };
+
+  const tabs = [
+    { id: "all", label: "ALL", color: theme.accent },
+    { id: "foundation", label: "FOUNDATION", color: "#888" },
+    ...(hasPath
+      ? [
+          {
+            id: userPath,
+            label: PATH_CONFIG[userPath]?.label || userPath.toUpperCase(),
+            color: PATH_CONFIG[userPath]?.color || theme.accent,
+          },
+        ]
+      : []),
+  ];
+
+  // Overall phase progress
+  const totalDone = activeCurriculum.reduce(
+    (sum, t) =>
+      sum +
+      t.modules.filter((m) => userState.completedModules.includes(m.id)).length,
+    0,
+  );
+  const totalMods = activeCurriculum.reduce(
+    (sum, t) => sum + t.modules.length,
+    0,
   );
 
   return (
-    <div style={{ padding: "56px 16px 80px" }}>
+    <div style={{ padding: "56px 0 80px" }}>
+      {/* Header */}
+      <div style={{ padding: "0 16px 16px" }}>
+        <div
+          style={{
+            fontSize: 22,
+            color: theme.text,
+            fontWeight: "bold",
+            marginBottom: 4,
+          }}
+        >
+          Mission Tree
+        </div>
+        <div
+          style={{
+            fontSize: 11,
+            color: "#666",
+            fontFamily: "monospace",
+            letterSpacing: 1,
+          }}
+        >
+          {totalDone}/{totalMods} MISSIONS COMPLETE
+        </div>
+        {/* Overall progress bar */}
+        <div
+          style={{
+            background: "#111",
+            borderRadius: 4,
+            height: 4,
+            marginTop: 8,
+            overflow: "hidden",
+          }}
+        >
+          <div
+            style={{
+              height: "100%",
+              width: `${totalMods > 0 ? Math.round((totalDone / totalMods) * 100) : 0}%`,
+              background: theme.accent,
+              transition: "width 0.4s ease",
+            }}
+          />
+        </div>
+      </div>
+
+      {/* Filter Tabs */}
       <div
         style={{
-          fontSize: 22,
-          color: theme.text,
-          marginBottom: 20,
-          fontWeight: "bold",
+          display: "flex",
+          gap: 8,
+          padding: "0 16px 20px",
+          overflowX: "auto",
+          scrollbarWidth: "none",
         }}
       >
-        Mission Tree
-      </div>
-      {activeCurriculum.map((track) => {
-        const completedInTrack = track.modules.filter((m) =>
-          userState.completedModules.includes(m.id),
-        ).length;
-        const trackDone = completedInTrack === track.modules.length;
-
-        return (
-          <div
-            key={track.id}
+        {tabs.map((tab) => (
+          <button
+            key={tab.id}
+            onClick={() => setTrackFilter(tab.id)}
             style={{
-              marginBottom: 12,
-              background: theme.surface,
-              border: `1px solid ${track.color}${trackDone ? "20" : "50"}`,
-              borderRadius: 10,
-              padding: 12,
+              padding: "6px 14px",
+              background:
+                trackFilter === tab.id ? tab.color + "20" : "transparent",
+              border: `1px solid ${trackFilter === tab.id ? tab.color : "#2a2a2a"}`,
+              color: trackFilter === tab.id ? tab.color : "#666",
+              borderRadius: 20,
+              fontFamily: "monospace",
+              fontSize: 10,
+              fontWeight: "bold",
+              letterSpacing: 1,
+              cursor: "pointer",
+              whiteSpace: "nowrap",
+              flexShrink: 0,
             }}
           >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
+      {/* Phases */}
+      {phases.map((phaseNum) => {
+        const meta = PHASE_META[phaseNum] || {
+          label: `Phase ${phaseNum}`,
+          title: "",
+          desc: "",
+        };
+        const phaseTracks = byPhase[phaseNum];
+        const phaseDone = phaseTracks.reduce(
+          (sum, t) =>
+            sum +
+            t.modules.filter((m) => userState.completedModules.includes(m.id))
+              .length,
+          0,
+        );
+        const phaseTotal = phaseTracks.reduce(
+          (sum, t) => sum + t.modules.length,
+          0,
+        );
+        const phaseComplete = phaseDone === phaseTotal && phaseTotal > 0;
+
+        return (
+          <div key={phaseNum} style={{ marginBottom: 8 }}>
+            {/* Phase header */}
             <div
+              onClick={() => togglePhase(phaseNum)}
               style={{
-                display: "flex",
-                alignItems: "center",
-                gap: 12,
-                marginBottom: 10,
+                padding: "10px 16px 8px",
+                borderTop: "1px solid #1a1a1a",
+                borderBottom: "1px solid #1a1a1a",
+                background: "#050505",
+                marginBottom: 12,
+                cursor: "pointer",
               }}
             >
-              <span
+              <div
                 style={{
-                  fontSize: 24,
-                  filter: trackDone ? "grayscale(100%)" : "none",
+                  display: "flex",
+                  alignItems: "baseline",
+                  justifyContent: "space-between",
                 }}
               >
-                {track.icon}
-              </span>
-              <div style={{ flex: 1 }}>
-                <div
-                  style={{
-                    fontSize: 14,
-                    color: trackDone ? "#666" : theme.text,
-                    fontWeight: "bold",
-                  }}
-                >
-                  {track.title}
+                <div>
+                  <span
+                    style={{
+                      fontSize: 9,
+                      color: theme.accent,
+                      fontFamily: "monospace",
+                      fontWeight: "bold",
+                      letterSpacing: 2,
+                      textTransform: "uppercase",
+                      opacity: 0.7,
+                    }}
+                  >
+                    {meta.label}
+                  </span>
+                  <div
+                    style={{
+                      fontSize: 15,
+                      color: phaseComplete ? "#555" : theme.text,
+                      fontWeight: "bold",
+                      letterSpacing: 0.5,
+                    }}
+                  >
+                    {meta.title} {openPhases[phaseNum] ? "▲" : "▼"}
+                  </div>
                 </div>
                 <div
                   style={{
                     fontSize: 10,
-                    color: trackDone ? "#444" : track.color,
+                    color: phaseComplete ? theme.accent : "#555",
+                    fontFamily: "monospace",
                   }}
                 >
-                  {completedInTrack}/{track.modules.length} COMPLETE
+                  {phaseComplete ? "✓ COMPLETE" : `${phaseDone}/${phaseTotal}`}
                 </div>
               </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-              {track.modules.map((mod) => {
-                const isDone = userState.completedModules.includes(mod.id);
-                return (
+              {!phaseComplete && (
+                <div
+                  style={{
+                    background: "#111",
+                    borderRadius: 3,
+                    height: 3,
+                    marginTop: 8,
+                    overflow: "hidden",
+                  }}
+                >
                   <div
-                    key={mod.id}
-                    onClick={() => setBriefingMission(mod)}
                     style={{
-                      padding: "10px",
-                      background: isDone ? theme.bg : "rgba(255,255,255,0.02)",
-                      borderRadius: 6,
-                      display: "flex",
-                      justifyContent: "space-between",
-                      cursor: isDone ? "default" : "pointer",
-                      border: `1px solid ${isDone ? theme.accent + "20" : "transparent"}`,
+                      height: "100%",
+                      width: `${phaseTotal > 0 ? Math.round((phaseDone / phaseTotal) * 100) : 0}%`,
+                      background: theme.accent + "80",
+                      transition: "width 0.4s ease",
                     }}
-                  >
-                    <span
-                      style={{
-                        fontSize: 12,
-                        color: isDone ? "#555" : "#ccc",
-                        textDecoration: isDone ? "line-through" : "none",
-                      }}
-                    >
-                      {mod.type === "boss" ? "💀 " : ""}
-                      {mod.title}
-                    </span>
+                  />
+                </div>
+              )}
+            </div>
+
+            {/* Tracks in this phase */}
+            {openPhases[phaseNum] && (
+              <div
+                style={{
+                  padding: "0 12px",
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 10,
+                }}
+              >
+                {phaseTracks.map((track) => {
+                  const completedInTrack = track.modules.filter((m) =>
+                    userState.completedModules.includes(m.id),
+                  ).length;
+                  const trackDone = completedInTrack === track.modules.length;
+                  const pct =
+                    track.modules.length > 0
+                      ? Math.round(
+                          (completedInTrack / track.modules.length) * 100,
+                        )
+                      : 0;
+
+                  return (
                     <div
+                      key={track.id}
                       style={{
-                        display: "flex",
-                        flexDirection: "column",
-                        alignItems: "flex-end",
-                        gap: 2,
-                        flexShrink: 0,
-                        minWidth: 60,
+                        background: theme.surface,
+                        border: `1px solid ${trackDone ? "#2a2a2a" : track.color + "40"}`,
+                        borderRadius: 10,
+                        overflow: "hidden",
                       }}
                     >
-                      <span
+                      {/* Track header */}
+                      <div
                         style={{
-                          fontSize: 10,
-                          color: isDone ? "#333" : "#facc15",
-                          fontFamily: "monospace",
-                          whiteSpace: "nowrap",
+                          padding: "12px 14px 10px",
+                          borderBottom: `1px solid ${track.color}15`,
+                          background: trackDone
+                            ? "transparent"
+                            : track.color + "08",
                         }}
                       >
-                        {isDone ? "✓ DONE" : `+${mod.xp} XP`}
-                      </span>
-                      {!isDone && (
-                        <span
+                        <div
                           style={{
-                            fontSize: 9,
-                            color: "#ef4444",
-                            fontFamily: "monospace",
-                            whiteSpace: "nowrap",
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 10,
                           }}
                         >
-                          -{getThreadCost(mod)} 🧵
-                        </span>
-                      )}
+                          <span
+                            style={{
+                              fontSize: 22,
+                              filter: trackDone ? "grayscale(1)" : "none",
+                            }}
+                          >
+                            {track.icon}
+                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div
+                              style={{
+                                fontSize: 13,
+                                color: trackDone ? "#555" : theme.text,
+                                fontWeight: "bold",
+                                whiteSpace: "nowrap",
+                                overflow: "hidden",
+                                textOverflow: "ellipsis",
+                              }}
+                            >
+                              {track.title}
+                            </div>
+                            <div
+                              style={{
+                                fontSize: 10,
+                                color: "#555",
+                                marginTop: 1,
+                              }}
+                            >
+                              {track.description}
+                            </div>
+                          </div>
+                          <div
+                            style={{
+                              fontSize: 11,
+                              fontFamily: "monospace",
+                              color: trackDone ? theme.accent : track.color,
+                              flexShrink: 0,
+                            }}
+                          >
+                            {trackDone ? "✓" : `${pct}%`}
+                          </div>
+                        </div>
+                        {/* Track progress bar */}
+                        <div
+                          style={{
+                            background: "#111",
+                            borderRadius: 3,
+                            height: 3,
+                            marginTop: 8,
+                            overflow: "hidden",
+                          }}
+                        >
+                          <div
+                            style={{
+                              height: "100%",
+                              width: `${pct}%`,
+                              background: trackDone
+                                ? theme.accent
+                                : track.color,
+                              transition: "width 0.4s ease",
+                            }}
+                          />
+                        </div>
+                      </div>
+
+                      {/* Module list */}
+                      <div
+                        style={{
+                          padding: "6px 8px",
+                          display: "flex",
+                          flexDirection: "column",
+                          gap: 3,
+                        }}
+                      >
+                        {track.modules.map((mod, idx) => {
+                          const isDone = userState.completedModules.includes(
+                            mod.id,
+                          );
+                          const typeConfig =
+                            MOD_TYPE[mod.type] || MOD_TYPE.lesson;
+                          const isBoss = mod.type === "boss";
+                          // seededIds===null → still loading, show normal until resolved
+                          const isSeeded =
+                            seededIds === null || seededIds.has(mod.id);
+
+                          return (
+                            <div
+                              key={mod.id}
+                              onClick={() => {
+                                if (!isSeeded) return;
+                                setBriefingMission(mod);
+                              }}
+                              style={{
+                                padding: "9px 10px",
+                                background: isDone
+                                  ? "transparent"
+                                  : !isSeeded
+                                    ? "transparent"
+                                    : isBoss
+                                      ? "rgba(239,68,68,0.04)"
+                                      : "rgba(255,255,255,0.02)",
+                                borderRadius: 6,
+                                display: "flex",
+                                alignItems: "center",
+                                gap: 8,
+                                cursor:
+                                  isSeeded && !isDone ? "pointer" : "default",
+                                border: `1px solid ${
+                                  isDone
+                                    ? "transparent"
+                                    : !isSeeded
+                                      ? "#1a1a1a"
+                                      : isBoss
+                                        ? "#ef444430"
+                                        : "#ffffff08"
+                                }`,
+                                opacity: isDone ? 0.45 : !isSeeded ? 0.3 : 1,
+                              }}
+                            >
+                              {/* Index / status icon */}
+                              <div
+                                style={{
+                                  fontSize: isDone || !isSeeded ? 11 : 9,
+                                  color: "#444",
+                                  fontFamily: "monospace",
+                                  width: 18,
+                                  flexShrink: 0,
+                                  textAlign: "center",
+                                }}
+                              >
+                                {isDone
+                                  ? "✓"
+                                  : !isSeeded
+                                    ? "🚧"
+                                    : String(idx + 1).padStart(2, "0")}
+                              </div>
+
+                              {/* Type icon */}
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  flexShrink: 0,
+                                  filter: !isSeeded ? "grayscale(1)" : "none",
+                                  opacity: !isSeeded ? 0.4 : 1,
+                                }}
+                              >
+                                {typeConfig.icon}
+                              </span>
+
+                              {/* Title */}
+                              <span
+                                style={{
+                                  fontSize: 12,
+                                  color: isDone
+                                    ? "#555"
+                                    : !isSeeded
+                                      ? "#2a2a2a"
+                                      : isBoss
+                                        ? "#ef4444"
+                                        : "#ccc",
+                                  flex: 1,
+                                  fontWeight:
+                                    isBoss && isSeeded ? "bold" : "normal",
+                                  textDecoration: isDone
+                                    ? "line-through"
+                                    : "none",
+                                  minWidth: 0,
+                                }}
+                              >
+                                {mod.title}
+                              </span>
+
+                              {/* Right label */}
+                              {!isSeeded ? (
+                                <div
+                                  style={{
+                                    fontSize: 8,
+                                    color: "#2a2a2a",
+                                    fontFamily: "monospace",
+                                    letterSpacing: 1,
+                                    whiteSpace: "nowrap",
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  BUILDING
+                                </div>
+                              ) : (
+                                <div
+                                  style={{
+                                    display: "flex",
+                                    flexDirection: "column",
+                                    alignItems: "flex-end",
+                                    gap: 2,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  <span
+                                    style={{
+                                      fontSize: 10,
+                                      color: isDone ? "#333" : "#facc15",
+                                      fontFamily: "monospace",
+                                      whiteSpace: "nowrap",
+                                    }}
+                                  >
+                                    {isDone ? "" : `+${mod.xp} XP`}
+                                  </span>
+                                  {!isDone && (
+                                    <span
+                                      style={{
+                                        fontSize: 9,
+                                        color: "#666",
+                                        fontFamily: "monospace",
+                                        whiteSpace: "nowrap",
+                                      }}
+                                    >
+                                      -{getThreadCost(mod)} 🧵
+                                    </span>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  );
+                })}
+              </div>
+            )}
           </div>
         );
       })}
+      {phases.length === 0 && (
+        <div
+          style={{
+            textAlign: "center",
+            padding: "60px 20px",
+            color: "#555",
+            fontFamily: "monospace",
+          }}
+        >
+          NO MISSIONS FOUND FOR THIS FILTER
+        </div>
+      )}
 
       {briefingMission && (
         <div
@@ -3755,10 +4780,15 @@ function SquadScreen({ userState, theme }) {
           );
         }
 
+        const cutoff24h = new Date(
+          Date.now() - 24 * 60 * 60 * 1000,
+        ).toISOString();
+
         const { data: msgHistory } = await supabase
           .from("squad_messages")
           .select("*")
           .eq("squad_id", memberData.squad_id)
+          .gte("created_at", cutoff24h)
           .order("created_at", { ascending: false })
           .limit(300); // 300 payloads guarantees all-day persistence without date-math crashes
 
@@ -3808,16 +4838,79 @@ function SquadScreen({ userState, theme }) {
 
     if (userState.path !== "unassigned") {
       fetchSquadData();
-      const refreshInterval = setInterval(fetchSquadData, 30000);
+      // No heavy interval here — the messages-only poll useEffect below handles ongoing refresh
       return () => {
         if (activeChannel) supabase.removeChannel(activeChannel);
-        clearInterval(refreshInterval);
       };
     }
     return () => {
       if (activeChannel) supabase.removeChannel(activeChannel);
     };
-  }, [userState, refreshToggle]);
+  }, [userState.id, userState.path, refreshToggle]);
+
+  // Lightweight messages-only poll. Acts as a safety net when the realtime
+  // WebSocket drops (common when the app is backgrounded on mobile). Refetches
+  // ONLY the messages — does not touch squad data, members, or the realtime channel.
+  // Filters to last 24h for both UX and to keep the table lean.
+  useEffect(() => {
+    if (!squadData) return;
+
+    let cancelled = false;
+
+    const pollMessages = async () => {
+      const cutoff24h = new Date(
+        Date.now() - 24 * 60 * 60 * 1000,
+      ).toISOString();
+      const { data } = await supabase
+        .from("squad_messages")
+        .select("*")
+        .eq("squad_id", squadData.squad_id)
+        .gte("created_at", cutoff24h)
+        .order("created_at", { ascending: true })
+        .limit(300);
+
+      if (cancelled || !data) return;
+
+      const localKey = localStorage.getItem(`squad_key_${squadData.squad_id}`);
+      const next = localKey
+        ? await Promise.all(
+            data.map(async (msg) => ({
+              ...msg,
+              content: await CryptoUtils.decrypt(msg.content, localKey),
+            })),
+          )
+        : data;
+
+      if (cancelled) return;
+
+      // Only update state if the message list actually changed — avoids
+      // re-renders every 5s when nothing's new.
+      setMessages((prev) => {
+        if (prev.length === next.length) {
+          const lastPrev = prev[prev.length - 1];
+          const lastNext = next[next.length - 1];
+          if (lastPrev?.id === lastNext?.id) return prev;
+        }
+        return next;
+      });
+    };
+
+    const interval = setInterval(pollMessages, 5000);
+
+    // Opportunistic server-side cleanup: fire-and-forget. Calls a SECURITY DEFINER
+    // RPC that deletes squad messages older than 24h. Safe to call repeatedly —
+    // does nothing if there are no stale rows. Set up the RPC in Supabase once
+    // (see comment block below).
+    supabase
+      .rpc("cleanup_old_squad_messages")
+      .then(() => {})
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [squadData]);
 
   const handleSendMessage = async (e) => {
     e.preventDefault();
@@ -3855,6 +4948,9 @@ function SquadScreen({ userState, theme }) {
     setErrorMsg("");
     if (!createName || !createKey)
       return setErrorMsg("Designation and E2E Key required.");
+
+    const nameError = validateName(createName, "squad");
+    if (nameError) return setErrorMsg(nameError);
 
     // Allow Admins to bypass the 5,000 Hash cost
     if (userState.role !== "admin" && userState.hashes < SQUAD_COST) {
@@ -4908,6 +6004,7 @@ function BlackMarketScreen({
           gridTemplateColumns: "1fr 1fr",
           gap: 12,
           marginBottom: 24,
+          alignItems: "stretch",
         }}
       >
         {/* Burner Phone */}
@@ -4918,13 +6015,17 @@ function BlackMarketScreen({
             borderRadius: 8,
             border: "1px solid #333",
             textAlign: "center",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
           <div style={{ fontSize: 32, marginBottom: 8 }}>📱</div>
           <div style={{ fontSize: 14, color: theme.text, fontWeight: "bold" }}>
             Burner Phone
           </div>
-          <div style={{ fontSize: 10, color: "#888", marginBottom: 12 }}>
+          <div
+            style={{ fontSize: 10, color: "#888", marginBottom: 12, flex: 1 }}
+          >
             Max capacity: 3. Saves Persistence.
           </div>
           <button
@@ -4955,13 +6056,17 @@ function BlackMarketScreen({
             borderRadius: 8,
             border: "1px solid #333",
             textAlign: "center",
+            display: "flex",
+            flexDirection: "column",
           }}
         >
           <div style={{ fontSize: 32, marginBottom: 8 }}>🧵</div>
           <div style={{ fontSize: 14, color: theme.text, fontWeight: "bold" }}>
             Buy Threads
           </div>
-          <div style={{ fontSize: 10, color: "#888", marginBottom: 12 }}>
+          <div
+            style={{ fontSize: 10, color: "#888", marginBottom: 12, flex: 1 }}
+          >
             Instantly recover +5 Threads to keep grinding.
           </div>
           <button
@@ -5044,72 +6149,74 @@ function BlackMarketScreen({
             </button>
           )}
         </div>
-      </div>
-
-      <div
-        style={{
-          background: theme.surface,
-          padding: 16,
-          borderRadius: 8,
-          border: "1px solid #333",
-          textAlign: "center",
-        }}
-      >
-        <div style={{ fontSize: 32, marginBottom: 8 }}>🧊</div>
-        <div style={{ fontSize: 14, color: theme.text, fontWeight: "bold" }}>
-          Neural Backup
-        </div>
-        <div style={{ fontSize: 10, color: "#888", marginBottom: 8 }}>
-          Restore a lost streak. Max 3.
-        </div>
-        <button
-          onClick={() => onPurchase("streak_restore", 3600)}
-          disabled={hashes < 3600 || (userState.streak_restores || 0) >= 3}
+        <div
           style={{
-            width: "100%",
-            padding: 8,
-            background:
-              hashes >= 3600 && (userState.streak_restores || 0) < 3
-                ? theme.accent
-                : "#222",
-            border: "none",
-            color: "#000",
-            fontWeight: "bold",
-            borderRadius: 4,
-            cursor:
-              hashes >= 3600 && (userState.streak_restores || 0) < 3
-                ? "pointer"
-                : "not-allowed",
+            background: theme.surface,
+            padding: 16,
+            borderRadius: 8,
+            border: "1px solid #333",
+            textAlign: "center",
+            gridColumn: "span 2",
           }}
         >
-          {(userState.streak_restores || 0) >= 3
-            ? "MAX REACHED"
-            : "3,600 Hashes"}
-        </button>
-        <div style={{ fontSize: 10, color: theme.accent, marginTop: 8 }}>
-          Owned: {userState.streak_restores || 0}/3
-        </div>
-        {(userState.streak_restores || 0) > 0 && (
+          <div style={{ fontSize: 32, marginBottom: 8 }}>🧊</div>
+          <div style={{ fontSize: 14, color: theme.text, fontWeight: "bold" }}>
+            Neural Backup
+          </div>
+          <div style={{ fontSize: 10, color: "#888", marginBottom: 8 }}>
+            Restore a lost streak. Max 3.
+          </div>
           <button
-            onClick={() => onPurchase("activate_streak_restore", 0)}
-            disabled={userState.persistence_streak > 0}
+            onClick={() => onPurchase("streak_restore", 3600)}
+            disabled={hashes < 3600 || (userState.streak_restores || 0) >= 3}
             style={{
               width: "100%",
               padding: 8,
-              marginTop: 8,
               background:
-                userState.persistence_streak === 0 ? "#22c55e" : "#444",
-              color: "#fff",
-              fontWeight: "bold",
+                hashes >= 3600 && (userState.streak_restores || 0) < 3
+                  ? theme.accent
+                  : "#222",
               border: "none",
+              color: "#000",
+              fontWeight: "bold",
               borderRadius: 4,
               cursor:
-                userState.persistence_streak === 0 ? "pointer" : "not-allowed",
+                hashes >= 3600 && (userState.streak_restores || 0) < 3
+                  ? "pointer"
+                  : "not-allowed",
             }}
           >
-            RESTORE
+            {(userState.streak_restores || 0) >= 3
+              ? "MAX REACHED"
+              : "3,600 Hashes"}
           </button>
-        )}
+          <div style={{ fontSize: 10, color: theme.accent, marginTop: 8 }}>
+            Owned: {userState.streak_restores || 0}/3
+          </div>
+          {(userState.streak_restores || 0) > 0 && (
+            <button
+              onClick={() => onPurchase("activate_streak_restore", 0)}
+              disabled={userState.persistence_streak > 0}
+              style={{
+                width: "100%",
+                padding: 8,
+                marginTop: 8,
+                background:
+                  userState.persistence_streak === 0 ? "#22c55e" : "#444",
+                color: "#fff",
+                fontWeight: "bold",
+                border: "none",
+                borderRadius: 4,
+                cursor:
+                  userState.persistence_streak === 0
+                    ? "pointer"
+                    : "not-allowed",
+              }}
+            >
+              RESTORE
+            </button>
+          )}
+        </div>
       </div>
 
       <h3
@@ -5210,6 +6317,205 @@ function LeaderboardScreen({ userState, theme }) {
   const [loading, setLoading] = useState(true);
   const [selectedOp, setSelectedOp] = useState(null);
   const [selectedNetwork, setSelectedNetwork] = useState(null);
+  // ── FRIEND LEADERBOARD ─────────────────────────────────────────────────
+  const [friendFilter, setFriendFilter] = useState(false);
+  const [followingIds, setFollowingIds] = useState([]);
+  // ── ACTIVITY FEED ──────────────────────────────────────────────────────
+  const [showActivityFeed, setShowActivityFeed] = useState(false);
+  const [activityFeedData, setActivityFeedData] = useState([]);
+  const [activityLoading, setActivityLoading] = useState(false);
+  const loadActivityFeed = async () => {
+    setActivityLoading(true);
+    const { data } = await supabase
+      .from("activity_feed")
+      .select("username, event_type, meta, created_at, user_id")
+      .order("created_at", { ascending: false })
+      .limit(40);
+    setActivityFeedData(data || []);
+    setActivityLoading(false);
+  };
+  // ── OWN SQUAD (for invite button) ─────────────────────────────────────
+  const [mySquadInfo, setMySquadInfo] = useState(null); // { squad_id, role, squads: {...} }
+  useEffect(() => {
+    supabase
+      .from("user_follows")
+      .select("followed_id")
+      .eq("follower_id", userState.id)
+      .limit(200)
+      .then(({ data }) =>
+        setFollowingIds(data?.map((r) => r.followed_id) || []),
+      );
+    supabase
+      .from("squad_members")
+      .select(
+        "squad_id, role, squads(name, invite_code, member_count:squad_members(count))",
+      )
+      .eq("user_id", userState.id)
+      .maybeSingle()
+      .then(({ data }) => setMySquadInfo(data || null));
+  }, [userState.id]);
+  const displayedOps = friendFilter
+    ? opLeaderboard.filter(
+        (op) => followingIds.includes(op.id) || op.id === userState.id,
+      )
+    : opLeaderboard;
+
+  // Profile search
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchResults, setSearchResults] = useState([]);
+  const [searching, setSearching] = useState(false);
+
+  // Squad search
+  const [squadSearchQuery, setSquadSearchQuery] = useState("");
+  const [squadSearchResults, setSquadSearchResults] = useState([]);
+  const [squadSearching, setSquadSearching] = useState(false);
+
+  // Squad membership cache for profile modal
+  const [selectedOpSquad, setSelectedOpSquad] = useState(null);
+
+  // Follow state for the currently-open profile modal
+  const [selectedOpFollow, setSelectedOpFollow] = useState({
+    following: false,
+    followers: 0,
+    followingCount: 0,
+  });
+  const [followLoading, setFollowLoading] = useState(false);
+
+  // Load follow data whenever a profile modal opens
+  useEffect(() => {
+    if (!selectedOp) return;
+    let cancelled = false;
+    async function load() {
+      const [followersRes, followingRes, myFollowRes] = await Promise.all([
+        supabase
+          .from("user_follows")
+          .select("*", { count: "exact", head: true })
+          .eq("followed_id", selectedOp.id),
+        supabase
+          .from("user_follows")
+          .select("*", { count: "exact", head: true })
+          .eq("follower_id", selectedOp.id),
+        userState.id === selectedOp.id
+          ? Promise.resolve({ data: null })
+          : supabase
+              .from("user_follows")
+              .select("follower_id")
+              .eq("follower_id", userState.id)
+              .eq("followed_id", selectedOp.id)
+              .maybeSingle(),
+      ]);
+      if (cancelled) return;
+      setSelectedOpFollow({
+        following: !!myFollowRes.data,
+        followers: followersRes.count || 0,
+        followingCount: followingRes.count || 0,
+      });
+    }
+    load();
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedOp, userState.id]);
+
+  const handleToggleFollow = async () => {
+    if (!selectedOp || followLoading || userState.id === selectedOp.id) return;
+    setFollowLoading(true);
+    if (selectedOpFollow.following) {
+      const { error } = await supabase
+        .from("user_follows")
+        .delete()
+        .eq("follower_id", userState.id)
+        .eq("followed_id", selectedOp.id);
+      if (!error) {
+        setSelectedOpFollow((s) => ({
+          ...s,
+          following: false,
+          followers: Math.max(0, s.followers - 1),
+        }));
+      }
+    } else {
+      const { error } = await supabase.from("user_follows").insert({
+        follower_id: userState.id,
+        followed_id: selectedOp.id,
+      });
+      if (!error) {
+        setSelectedOpFollow((s) => ({
+          ...s,
+          following: true,
+          followers: s.followers + 1,
+        }));
+      }
+    }
+    setFollowLoading(false);
+  };
+
+  // Debounced squad search
+  useEffect(() => {
+    const q = squadSearchQuery.trim();
+    if (q.length < 2) {
+      setSquadSearchResults([]);
+      setSquadSearching(false);
+      return;
+    }
+    setSquadSearching(true);
+    const timer = setTimeout(async () => {
+      const { data } = await supabase
+        .from("squads")
+        .select(
+          "id, name, path_alignment, total_xp, member_count:squad_members(count)",
+        )
+        .ilike("name", `%${q}%`)
+        .order("total_xp", { ascending: false })
+        .limit(10);
+      setSquadSearchResults(data || []);
+      setSquadSearching(false);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [squadSearchQuery]);
+
+  // Load squad membership for selectedOp profile modal
+  useEffect(() => {
+    if (!selectedOp) {
+      setSelectedOpSquad(null);
+      return;
+    }
+    let cancelled = false;
+    supabase
+      .from("squad_members")
+      .select("squads(id, name, path_alignment)")
+      .eq("user_id", selectedOp.id)
+      .maybeSingle()
+      .then(({ data }) => {
+        if (!cancelled) setSelectedOpSquad(data?.squads || null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedOp]);
+
+  // Debounced username search
+  useEffect(() => {
+    const q = searchQuery.trim();
+    if (q.length < 2) {
+      setSearchResults([]);
+      setSearching(false);
+      return;
+    }
+    setSearching(true);
+    const timer = setTimeout(async () => {
+      const { data } = await supabase
+        .from("profiles")
+        .select(
+          "id, username, xp, path_alignment, role, persistence_streak, is_supporter, completed_modules, unlocked_achievements, created_at, bio, flair, featured_achievement",
+        )
+        .ilike("username", `%${q}%`)
+        .order("xp", { ascending: false })
+        .limit(15);
+      setSearchResults(data || []);
+      setSearching(false);
+    }, 300); // 300ms debounce — avoids hammering the DB on every keystroke
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   useEffect(() => {
     async function fetchBoards() {
@@ -5219,7 +6525,7 @@ function LeaderboardScreen({ userState, theme }) {
         const { data } = await supabase
           .from("profiles")
           .select(
-            "id, username, xp, path_alignment, role, persistence_streak, is_supporter, completed_modules, unlocked_achievements, created_at",
+            "id, username, xp, path_alignment, role, persistence_streak, is_supporter, completed_modules, unlocked_achievements, created_at, bio, flair, featured_achievement",
           )
           .order("xp", { ascending: false })
           .limit(50);
@@ -5262,6 +6568,466 @@ function LeaderboardScreen({ userState, theme }) {
         >
           Threat Board
         </div>
+        <button
+          onClick={() => {
+            setShowActivityFeed(true);
+            loadActivityFeed();
+          }}
+          style={{
+            background: "transparent",
+            border: `1px solid ${theme.accent}40`,
+            borderRadius: 6,
+            padding: "6px 12px",
+            color: theme.accent,
+            fontFamily: "monospace",
+            fontSize: 10,
+            letterSpacing: 2,
+            cursor: "pointer",
+            fontWeight: "bold",
+          }}
+        >
+          📡 FEED
+        </button>
+      </div>
+
+      {/* ── ACTIVITY FEED MODAL ──────────────────────────────────────────── */}
+      {showActivityFeed && (
+        <div
+          style={{
+            position: "fixed",
+            inset: 0,
+            background: "rgba(0,0,0,0.92)",
+            zIndex: 500,
+            display: "flex",
+            alignItems: "center",
+            justifyContent: "center",
+            padding: 16,
+          }}
+          onClick={() => setShowActivityFeed(false)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            style={{
+              background: theme.surface,
+              border: `1px solid ${theme.accent}40`,
+              borderRadius: 12,
+              padding: 20,
+              width: "100%",
+              maxWidth: 440,
+              maxHeight: "80vh",
+              display: "flex",
+              flexDirection: "column",
+            }}
+          >
+            <div
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                alignItems: "center",
+                marginBottom: 16,
+              }}
+            >
+              <div
+                style={{
+                  fontFamily: "monospace",
+                  fontWeight: "bold",
+                  color: theme.accent,
+                  fontSize: 13,
+                  letterSpacing: 2,
+                }}
+              >
+                📡 NETWORK ACTIVITY
+              </div>
+              <button
+                onClick={() => setShowActivityFeed(false)}
+                style={{
+                  background: "transparent",
+                  border: "none",
+                  color: "#666",
+                  fontSize: 20,
+                  cursor: "pointer",
+                }}
+              >
+                ✕
+              </button>
+            </div>
+            <div
+              style={{
+                overflowY: "auto",
+                flex: 1,
+                display: "flex",
+                flexDirection: "column",
+                gap: 6,
+              }}
+            >
+              {activityLoading ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    color: "#555",
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    padding: 24,
+                  }}
+                >
+                  [ FETCHING INTEL... ]
+                </div>
+              ) : activityFeedData.length === 0 ? (
+                <div
+                  style={{
+                    textAlign: "center",
+                    color: "#555",
+                    fontFamily: "monospace",
+                    fontSize: 11,
+                    padding: 24,
+                  }}
+                >
+                  No recent activity. Follow operators to see their progress
+                  here.
+                </div>
+              ) : (
+                activityFeedData.map((ev, i) => {
+                  const ago = Math.round(
+                    (Date.now() - new Date(ev.created_at)) / 60000,
+                  );
+                  const agoStr =
+                    ago < 60
+                      ? `${ago}m ago`
+                      : ago < 1440
+                        ? `${Math.round(ago / 60)}h ago`
+                        : `${Math.round(ago / 1440)}d ago`;
+                  let label = "";
+                  const moduleTitle =
+                    ev.meta?.module_title || ev.meta?.module_id || "a mission";
+                  if (ev.event_type === "lesson_complete")
+                    label = `completed "${moduleTitle}"`;
+                  else if (ev.event_type === "streak_milestone")
+                    label = `hit a ${ev.meta?.days}-day streak 🔥`;
+                  else if (ev.event_type === "rank_up")
+                    label = `ranked up to ${ev.meta?.rank_name || "a new rank"} ${ev.meta?.rank_icon || ""}`;
+                  else label = ev.event_type.replace(/_/g, " ");
+                  const isMe = ev.user_id === userState.id;
+                  return (
+                    <div
+                      key={i}
+                      style={{
+                        background: theme.bg,
+                        borderRadius: 8,
+                        padding: "9px 12px",
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "flex-start",
+                        border: isMe
+                          ? `1px solid ${theme.accent}30`
+                          : "1px solid rgba(255,255,255,0.04)",
+                      }}
+                    >
+                      <span
+                        style={{
+                          fontFamily: "monospace",
+                          fontSize: 11,
+                          color: theme.text,
+                          flex: 1,
+                          lineHeight: 1.4,
+                        }}
+                      >
+                        <span
+                          style={{
+                            color: isMe ? theme.accent : "#a0a0a0",
+                            fontWeight: "bold",
+                          }}
+                        >
+                          {ev.username}
+                        </span>{" "}
+                        {label}
+                      </span>
+                      <span
+                        style={{
+                          fontFamily: "monospace",
+                          fontSize: 9,
+                          color: "#555",
+                          flexShrink: 0,
+                          marginLeft: 10,
+                          marginTop: 1,
+                        }}
+                      >
+                        {agoStr}
+                      </span>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* UNIFIED SEARCH — switches context with the active tab */}
+      <div style={{ marginBottom: 20, position: "relative" }}>
+        <input
+          type="text"
+          value={boardType === "operators" ? searchQuery : squadSearchQuery}
+          onChange={(e) =>
+            boardType === "operators"
+              ? setSearchQuery(e.target.value)
+              : setSquadSearchQuery(e.target.value)
+          }
+          placeholder={
+            boardType === "operators"
+              ? "🔍 Search operators by username..."
+              : "🔍 Search networks by name..."
+          }
+          style={{
+            width: "100%",
+            padding: "12px 14px",
+            background: theme.surface,
+            border: `1px solid ${
+              (boardType === "operators" ? searchQuery : squadSearchQuery)
+                ? theme.accent + "60"
+                : "#222"
+            }`,
+            color: theme.text,
+            borderRadius: 8,
+            fontSize: 13,
+            fontFamily: "monospace",
+            outline: "none",
+          }}
+        />
+
+        {/* Operator results dropdown */}
+        {boardType === "operators" && searchQuery.trim().length >= 2 && (
+          <div
+            style={{
+              position: "absolute",
+              top: "100%",
+              left: 0,
+              right: 0,
+              marginTop: 4,
+              background: theme.surface,
+              border: "1px solid #2a2a2a",
+              borderRadius: 8,
+              maxHeight: 280,
+              overflowY: "auto",
+              zIndex: 50,
+              boxShadow: "0 8px 20px rgba(0,0,0,0.6)",
+            }}
+          >
+            {searching ? (
+              <div
+                style={{
+                  padding: 14,
+                  textAlign: "center",
+                  fontSize: 11,
+                  color: "#666",
+                  fontFamily: "monospace",
+                  letterSpacing: 1,
+                }}
+              >
+                SEARCHING...
+              </div>
+            ) : searchResults.length === 0 ? (
+              <div
+                style={{
+                  padding: 14,
+                  textAlign: "center",
+                  fontSize: 11,
+                  color: "#666",
+                  fontFamily: "monospace",
+                  letterSpacing: 1,
+                }}
+              >
+                NO OPERATORS FOUND
+              </div>
+            ) : (
+              searchResults.map((op) => {
+                const opRank = getRank(op.xp);
+                const pathColor = PATHS[op.path_alignment]?.color || "#888";
+                return (
+                  <div
+                    key={op.id}
+                    onClick={() => {
+                      setSelectedOp({ ...op, rankNum: "—" });
+                      setSearchQuery("");
+                      setSearchResults([]);
+                    }}
+                    style={{
+                      padding: "10px 14px",
+                      borderBottom: "1px solid #1a1a1a",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 18 }}>{opRank.icon}</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: theme.text,
+                          fontWeight: "bold",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {op.username}
+                        {op.is_supporter && " 💎"}
+                        {op.role === "admin" && (
+                          <span
+                            style={{
+                              marginLeft: 6,
+                              fontSize: 9,
+                              color: "#ef4444",
+                              fontFamily: "monospace",
+                            }}
+                          >
+                            [ROOT]
+                          </span>
+                        )}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: pathColor,
+                          fontFamily: "monospace",
+                        }}
+                      >
+                        {opRank.name.toUpperCase()} · {op.xp.toLocaleString()}{" "}
+                        XP
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "#facc15",
+                        fontFamily: "monospace",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      🔥 {op.persistence_streak || 0}
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
+
+        {/* Squad results dropdown */}
+        {boardType === "squads" && squadSearchQuery.trim().length >= 2 && (
+          <div
+            style={{
+              position: "absolute",
+              top: "100%",
+              left: 0,
+              right: 0,
+              marginTop: 4,
+              background: theme.surface,
+              border: "1px solid #2a2a2a",
+              borderRadius: 8,
+              maxHeight: 280,
+              overflowY: "auto",
+              zIndex: 50,
+              boxShadow: "0 8px 20px rgba(0,0,0,0.6)",
+            }}
+          >
+            {squadSearching ? (
+              <div
+                style={{
+                  padding: 14,
+                  textAlign: "center",
+                  fontSize: 11,
+                  color: "#666",
+                  fontFamily: "monospace",
+                  letterSpacing: 1,
+                }}
+              >
+                SEARCHING...
+              </div>
+            ) : squadSearchResults.length === 0 ? (
+              <div
+                style={{
+                  padding: 14,
+                  textAlign: "center",
+                  fontSize: 11,
+                  color: "#666",
+                  fontFamily: "monospace",
+                  letterSpacing: 1,
+                }}
+              >
+                NO NETWORKS FOUND
+              </div>
+            ) : (
+              squadSearchResults.map((sq) => {
+                const pathInfo = PATHS[sq.path_alignment] || PATHS.unassigned;
+                const memberCount = Array.isArray(sq.member_count)
+                  ? sq.member_count[0]?.count
+                  : sq.member_count || 0;
+                return (
+                  <div
+                    key={sq.id}
+                    onClick={() => {
+                      // Normalize member_count — the nested aggregate query returns
+                      // [{count: N}] but the modal expects a plain number.
+                      const memberCount = Array.isArray(sq.member_count)
+                        ? (sq.member_count[0]?.count ?? 0)
+                        : sq.member_count || 0;
+                      setSelectedNetwork({ ...sq, member_count: memberCount });
+                      setSquadSearchQuery("");
+                      setSquadSearchResults([]);
+                    }}
+                    style={{
+                      padding: "10px 14px",
+                      borderBottom: "1px solid #1a1a1a",
+                      display: "flex",
+                      alignItems: "center",
+                      gap: 10,
+                      cursor: "pointer",
+                    }}
+                  >
+                    <span style={{ fontSize: 18 }}>
+                      {pathInfo.emoji || "🕸️"}
+                    </span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div
+                        style={{
+                          fontSize: 13,
+                          color: theme.text,
+                          fontWeight: "bold",
+                          whiteSpace: "nowrap",
+                          overflow: "hidden",
+                          textOverflow: "ellipsis",
+                        }}
+                      >
+                        {sq.name}
+                      </div>
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: pathInfo.color,
+                          fontFamily: "monospace",
+                        }}
+                      >
+                        {pathInfo.label?.toUpperCase()} · {memberCount} members
+                      </div>
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: "#facc15",
+                        fontFamily: "monospace",
+                        whiteSpace: "nowrap",
+                      }}
+                    >
+                      {(sq.total_xp || 0).toLocaleString()} XP
+                    </div>
+                  </div>
+                );
+              })
+            )}
+          </div>
+        )}
       </div>
 
       {/* TABS */}
@@ -5311,115 +7077,152 @@ function LeaderboardScreen({ userState, theme }) {
           [ FETCHING DATA... ]
         </div>
       ) : boardType === "operators" ? (
-        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-          {opLeaderboard.map((operator, index) => {
-            const rank = index + 1;
-            const isMe = userState && operator.username === userState.username;
-            const pathInfo = PATHS[operator.path_alignment] || PATHS.unassigned;
+        <div>
+          {/* ── FRIEND FILTER TOGGLE ─────────────────────────────────── */}
+          <button
+            onClick={() => setFriendFilter((f) => !f)}
+            style={{
+              width: "100%",
+              padding: "8px 12px",
+              marginBottom: 10,
+              background: friendFilter ? theme.accent + "20" : "transparent",
+              border: `1px solid ${friendFilter ? theme.accent : "#333"}`,
+              borderRadius: 8,
+              color: friendFilter ? theme.accent : "#666",
+              fontFamily: "monospace",
+              fontSize: 10,
+              letterSpacing: 2,
+              cursor: "pointer",
+              fontWeight: "bold",
+            }}
+          >
+            {friendFilter ? "✓ FRIENDS ONLY" : "SHOW FRIENDS ONLY"}
+          </button>
+          {friendFilter && displayedOps.length === 0 && (
+            <div
+              style={{
+                textAlign: "center",
+                color: "#555",
+                fontFamily: "monospace",
+                fontSize: 11,
+                padding: 20,
+              }}
+            >
+              Follow operators to see them here.
+            </div>
+          )}
+          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+            {displayedOps.map((operator, index) => {
+              const rank = index + 1;
+              const isMe =
+                userState && operator.username === userState.username;
+              const pathInfo =
+                PATHS[operator.path_alignment] || PATHS.unassigned;
 
-            let badge = "💀";
-            let rankColor = "#555";
-            let bgAlpha = "00";
-            if (rank === 1) {
-              badge = "🥇";
-              rankColor = "#facc15";
-              bgAlpha = "20";
-            } else if (rank === 2) {
-              badge = "🥈";
-              rankColor = "#e2e8f0";
-              bgAlpha = "10";
-            } else if (rank === 3) {
-              badge = "🥉";
-              rankColor = "#ca8a04";
-              bgAlpha = "10";
-            }
+              let badge = "💀";
+              let rankColor = "#555";
+              let bgAlpha = "00";
+              if (rank === 1) {
+                badge = "🥇";
+                rankColor = "#facc15";
+                bgAlpha = "20";
+              } else if (rank === 2) {
+                badge = "🥈";
+                rankColor = "#e2e8f0";
+                bgAlpha = "10";
+              } else if (rank === 3) {
+                badge = "🥉";
+                rankColor = "#ca8a04";
+                bgAlpha = "10";
+              }
 
-            return (
-              <div
-                key={index}
-                onClick={() => setSelectedOp({ ...operator, rankNum: rank })}
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: 12,
-                  padding: "12px 14px",
-                  cursor: "pointer",
-                  background: isMe
-                    ? theme.surface
-                    : `#${pathInfo.color.replace("#", "")}${bgAlpha}`,
-                  border: `1px solid ${isMe ? theme.accent + "40" : "rgba(255,255,255,0.05)"}`,
-                  borderRadius: 10,
-                }}
-              >
+              return (
                 <div
+                  key={index}
+                  onClick={() => setSelectedOp({ ...operator, rankNum: rank })}
                   style={{
-                    width: 28,
-                    textAlign: "center",
-                    color: rankColor,
-                    fontSize: 14,
-                    fontWeight: "bold",
-                    fontFamily: "monospace",
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 12,
+                    padding: "12px 14px",
+                    cursor: "pointer",
+                    background: isMe
+                      ? theme.surface
+                      : `#${pathInfo.color.replace("#", "")}${bgAlpha}`,
+                    border: `1px solid ${isMe ? theme.accent + "40" : "rgba(255,255,255,0.05)"}`,
+                    borderRadius: 10,
                   }}
                 >
-                  #{rank}
-                </div>
-                <div style={{ flex: 1 }}>
                   <div
                     style={{
-                      fontSize: 15,
-                      color: isMe ? theme.accent : theme.text,
-                      fontWeight: "bold",
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 6,
-                    }}
-                  >
-                    {operator.username}
-                    {operator.is_supporter && "💎"}
-                    {operator.role === "admin" && (
-                      <span
-                        style={{
-                          marginLeft: 8,
-                          padding: "2px 6px",
-                          background: "rgba(239, 68, 68, 0.1)",
-                          border: "1px solid #ef4444",
-                          color: "#ef4444",
-                          borderRadius: 4,
-                          fontSize: 10,
-                          letterSpacing: 1,
-                          textTransform: "uppercase",
-                        }}
-                      >
-                        ROOT
-                      </span>
-                    )}
-                  </div>
-                  <div
-                    style={{
-                      fontSize: 10,
-                      color: pathInfo.color,
-                      fontFamily: "monospace",
-                      textTransform: "uppercase",
-                    }}
-                  >
-                    {pathInfo.label}
-                  </div>
-                </div>
-                <div style={{ textAlign: "right" }}>
-                  <div
-                    style={{
+                      width: 28,
+                      textAlign: "center",
+                      color: rankColor,
                       fontSize: 14,
-                      color: isMe ? theme.accent : "#facc15",
                       fontWeight: "bold",
                       fontFamily: "monospace",
                     }}
                   >
-                    {operator.xp.toLocaleString()}
+                    #{rank}
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div
+                      style={{
+                        fontSize: 15,
+                        color: isMe ? theme.accent : theme.text,
+                        fontWeight: "bold",
+                        display: "flex",
+                        alignItems: "center",
+                        gap: 6,
+                      }}
+                    >
+                      {operator.username}
+                      {operator.is_supporter && "💎"}
+                      {operator.role === "admin" && (
+                        <span
+                          style={{
+                            marginLeft: 8,
+                            padding: "2px 6px",
+                            background: "rgba(239, 68, 68, 0.1)",
+                            border: "1px solid #ef4444",
+                            color: "#ef4444",
+                            borderRadius: 4,
+                            fontSize: 10,
+                            letterSpacing: 1,
+                            textTransform: "uppercase",
+                          }}
+                        >
+                          ROOT
+                        </span>
+                      )}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: pathInfo.color,
+                        fontFamily: "monospace",
+                        textTransform: "uppercase",
+                      }}
+                    >
+                      {pathInfo.label}
+                    </div>
+                  </div>
+                  <div style={{ textAlign: "right" }}>
+                    <div
+                      style={{
+                        fontSize: 14,
+                        color: isMe ? theme.accent : "#facc15",
+                        fontWeight: "bold",
+                        fontFamily: "monospace",
+                      }}
+                    >
+                      {operator.xp.toLocaleString()}
+                    </div>
                   </div>
                 </div>
-              </div>
-            );
-          })}
+              );
+            })}
+          </div>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
@@ -5730,6 +7533,173 @@ function LeaderboardScreen({ userState, theme }) {
                   .toUpperCase()}
               </div>
             )}
+
+            {/* FOLLOWER STATS + FOLLOW BUTTON */}
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "1fr 1fr",
+                gap: 8,
+                marginBottom: 10,
+              }}
+            >
+              <div
+                style={{
+                  background: theme.bg,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  textAlign: "center",
+                  border: "1px solid rgba(255,255,255,0.05)",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 16,
+                    color: theme.text,
+                    fontWeight: "bold",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {selectedOpFollow.followers}
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: "#888",
+                    textTransform: "uppercase",
+                    marginTop: 2,
+                    letterSpacing: 1,
+                  }}
+                >
+                  Followers
+                </div>
+              </div>
+              <div
+                style={{
+                  background: theme.bg,
+                  padding: "8px 10px",
+                  borderRadius: 8,
+                  textAlign: "center",
+                  border: "1px solid rgba(255,255,255,0.05)",
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 16,
+                    color: theme.text,
+                    fontWeight: "bold",
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {selectedOpFollow.followingCount}
+                </div>
+                <div
+                  style={{
+                    fontSize: 9,
+                    color: "#888",
+                    textTransform: "uppercase",
+                    marginTop: 2,
+                    letterSpacing: 1,
+                  }}
+                >
+                  Following
+                </div>
+              </div>
+            </div>
+
+            {userState.id !== selectedOp.id && (
+              <button
+                onClick={handleToggleFollow}
+                disabled={followLoading}
+                style={{
+                  width: "100%",
+                  padding: "10px",
+                  background: selectedOpFollow.following
+                    ? "transparent"
+                    : theme.accent,
+                  color: selectedOpFollow.following ? theme.accent : "#000",
+                  border: `1px solid ${theme.accent}`,
+                  borderRadius: 8,
+                  fontFamily: "monospace",
+                  fontSize: 11,
+                  letterSpacing: 2,
+                  fontWeight: "bold",
+                  cursor: followLoading ? "wait" : "pointer",
+                  marginBottom: 10,
+                  opacity: followLoading ? 0.6 : 1,
+                }}
+              >
+                {followLoading
+                  ? "..."
+                  : selectedOpFollow.following
+                    ? "✓ FOLLOWING"
+                    : "+ FOLLOW"}
+              </button>
+            )}
+
+            {/* ── INVITE TO SQUAD ────────────────────────────────────── */}
+            {userState.id !== selectedOp.id &&
+              mySquadInfo &&
+              mySquadInfo.role === "leader" &&
+              !selectedOp.squad_id && (
+                <InviteToSquadButton
+                  inviteeId={selectedOp.id}
+                  inviteeUsername={selectedOp.username}
+                  squadId={mySquadInfo.squad_id}
+                  squadName={mySquadInfo.squads?.name}
+                  inviteCode={mySquadInfo.squads?.invite_code}
+                  theme={theme}
+                />
+              )}
+            {/* Bio & Flair display */}
+            {(selectedOp.bio ||
+              selectedOp.flair ||
+              selectedOp.featured_achievement) && (
+              <div
+                style={{
+                  background: theme.bg,
+                  borderRadius: 8,
+                  padding: "10px 12px",
+                  marginBottom: 10,
+                  border: "1px solid rgba(255,255,255,0.05)",
+                }}
+              >
+                {selectedOp.flair && (
+                  <span style={{ fontSize: 20, marginRight: 8 }}>
+                    {selectedOp.flair}
+                  </span>
+                )}
+                {selectedOp.bio && (
+                  <span
+                    style={{
+                      fontFamily: "monospace",
+                      fontSize: 11,
+                      color: "#ccc",
+                    }}
+                  >
+                    {selectedOp.bio}
+                  </span>
+                )}
+                {selectedOp.featured_achievement &&
+                  (() => {
+                    const ach = ACHIEVEMENTS.find(
+                      (a) => a.id === selectedOp.featured_achievement,
+                    );
+                    return ach ? (
+                      <div
+                        style={{
+                          fontSize: 10,
+                          color: theme.accent,
+                          fontFamily: "monospace",
+                          marginTop: 4,
+                        }}
+                      >
+                        ⭐ Featured: {ach.icon} {ach.name}
+                      </div>
+                    ) : null;
+                  })()}
+              </div>
+            )}
             <div
               style={{
                 textAlign: "center",
@@ -5739,11 +7709,32 @@ function LeaderboardScreen({ userState, theme }) {
                 padding: "8px",
                 border: `1px dashed ${PATHS[selectedOp.path_alignment]?.color || "#888"}50`,
                 borderRadius: 4,
+                marginBottom: 10,
               }}
             >
               ALIGNMENT:{" "}
               {PATHS[selectedOp.path_alignment]?.label?.toUpperCase() ||
                 "UNASSIGNED"}
+            </div>
+
+            {/* SQUAD MEMBERSHIP */}
+            <div
+              style={{
+                textAlign: "center",
+                fontSize: 11,
+                color: selectedOpSquad
+                  ? PATHS[selectedOpSquad.path_alignment]?.color || theme.accent
+                  : "#555",
+                fontFamily: "monospace",
+                padding: "8px",
+                border: `1px dashed ${selectedOpSquad ? (PATHS[selectedOpSquad.path_alignment]?.color || theme.accent) + "50" : "#2a2a2a"}`,
+                borderRadius: 4,
+                marginBottom: 10,
+              }}
+            >
+              {selectedOpSquad
+                ? `🕸️ NETWORK: ${selectedOpSquad.name}`
+                : "NO NETWORK AFFILIATION"}
             </div>
           </div>
         </div>
@@ -5885,6 +7876,165 @@ function LeaderboardScreen({ userState, theme }) {
   );
 }
 
+// ── FOLLOW LIST MODAL ──────────────────────────────────────────────────────
+function FollowListModal({ title, list, loading, onClose, theme }) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(0,0,0,0.88)",
+        zIndex: 400,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        padding: 16,
+      }}
+      onClick={onClose}
+    >
+      <div
+        style={{
+          background: theme.surface,
+          border: `1px solid ${theme.accent}40`,
+          borderRadius: 12,
+          padding: 20,
+          width: "100%",
+          maxWidth: 360,
+          maxHeight: "70vh",
+          overflowY: "auto",
+          position: "relative",
+        }}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <button
+          onClick={onClose}
+          style={{
+            position: "absolute",
+            top: 12,
+            right: 14,
+            background: "none",
+            border: "none",
+            color: "#888",
+            fontSize: 18,
+            cursor: "pointer",
+          }}
+        >
+          ✕
+        </button>
+
+        <div
+          style={{
+            fontSize: 13,
+            color: theme.text,
+            fontWeight: "bold",
+            fontFamily: "monospace",
+            textTransform: "uppercase",
+            letterSpacing: 2,
+            marginBottom: 16,
+          }}
+        >
+          {title}
+          <span
+            style={{
+              marginLeft: 8,
+              fontSize: 10,
+              color: "#666",
+              fontWeight: "normal",
+            }}
+          >
+            {!loading && `${list.length} operators`}
+          </span>
+        </div>
+
+        {loading ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: 24,
+              color: "#555",
+              fontFamily: "monospace",
+              fontSize: 11,
+              letterSpacing: 1,
+            }}
+          >
+            LOADING...
+          </div>
+        ) : list.length === 0 ? (
+          <div
+            style={{
+              textAlign: "center",
+              padding: 24,
+              color: "#555",
+              fontFamily: "monospace",
+              fontSize: 11,
+              letterSpacing: 1,
+            }}
+          >
+            NO OPERATORS YET
+          </div>
+        ) : (
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            {list.map((op) => {
+              const opRank = getRank(op.xp || 0);
+              const pathColor = PATHS[op.path_alignment]?.color || "#888";
+              return (
+                <div
+                  key={op.id}
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 10,
+                    padding: "8px 10px",
+                    background: "rgba(255,255,255,0.02)",
+                    borderRadius: 8,
+                    border: "1px solid #1a1a1a",
+                  }}
+                >
+                  <span style={{ fontSize: 20 }}>{opRank.icon}</span>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div
+                      style={{
+                        fontSize: 13,
+                        color: theme.text,
+                        fontWeight: "bold",
+                        whiteSpace: "nowrap",
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                      }}
+                    >
+                      {op.username}
+                      {op.is_supporter && " 💎"}
+                    </div>
+                    <div
+                      style={{
+                        fontSize: 10,
+                        color: pathColor,
+                        fontFamily: "monospace",
+                      }}
+                    >
+                      {opRank.name} · {(op.xp || 0).toLocaleString()} XP
+                    </div>
+                  </div>
+                  <div
+                    style={{
+                      fontSize: 10,
+                      color: "#facc15",
+                      fontFamily: "monospace",
+                      whiteSpace: "nowrap",
+                    }}
+                  >
+                    🔥 {op.persistence_streak || 0}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function OperatorScreen({
   userState,
   setScreen,
@@ -5899,6 +8049,86 @@ function OperatorScreen({
   const [newHandle, setNewHandle] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [updateMsg, setUpdateMsg] = useState("");
+  // ── ACCORDION TABS ──────────────────────────────────────────────────────
+  const [openTab, setOpenTab] = useState(null); // null | 'profile' | 'data' | 'danger'
+  const toggleTab = (tab) => setOpenTab((prev) => (prev === tab ? null : tab));
+
+  // ── PROFILE CUSTOMIZATION state ──────────────────────────────────────────
+  const [profileBio, setProfileBio] = useState(userState.bio || "");
+  const [profileFlair, setProfileFlair] = useState(userState.flair || "");
+  const [featuredAchievement, setFeaturedAchievement] = useState(
+    userState.featured_achievement || "",
+  );
+  const [profileSaveMsg, setProfileSaveMsg] = useState("");
+
+  // ── FOLLOWER COUNTS for own profile ──────────────────────────────────────
+  const [myFollowerCount, setMyFollowerCount] = useState(0);
+  const [myFollowingCount, setMyFollowingCount] = useState(0);
+  const [newFollowersThisWeek, setNewFollowersThisWeek] = useState(0);
+
+  // Follower/Following list modals
+  const [showFollowerList, setShowFollowerList] = useState(false);
+  const [showFollowingList, setShowFollowingList] = useState(false);
+  const [followerList, setFollowerList] = useState([]);
+  const [followingList, setFollowingList] = useState([]);
+  const [listLoading, setListLoading] = useState(false);
+
+  // Load own follow counts once
+  useEffect(() => {
+    async function loadMyCounts() {
+      const weekAgo = new Date(Date.now() - 7 * 86400000).toISOString();
+      const [fersRes, fingRes, newRes] = await Promise.all([
+        supabase
+          .from("user_follows")
+          .select("*", { count: "exact", head: true })
+          .eq("followed_id", userState.id),
+        supabase
+          .from("user_follows")
+          .select("*", { count: "exact", head: true })
+          .eq("follower_id", userState.id),
+        supabase
+          .from("user_follows")
+          .select("*", { count: "exact", head: true })
+          .eq("followed_id", userState.id)
+          .gte("created_at", weekAgo),
+      ]);
+      setMyFollowerCount(fersRes.count || 0);
+      setMyFollowingCount(fingRes.count || 0);
+      setNewFollowersThisWeek(newRes.count || 0);
+    }
+    loadMyCounts();
+  }, [userState.id]);
+
+  const [profileSaving, setProfileSaving] = useState(false);
+
+  const handleSaveProfile = async () => {
+    if (profileSaving) return;
+    const cleanBio = profileBio.slice(0, 80).replace(/[<>]/g, ""); // strip HTML only, allow punctuation
+    setProfileSaving(true);
+    setProfileSaveMsg("");
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        bio: cleanBio,
+        flair: profileFlair,
+        featured_achievement: featuredAchievement || null,
+      })
+      .eq("id", userState.id);
+    setProfileSaving(false);
+    if (!error) {
+      setUserState((prev) => ({
+        ...prev,
+        bio: cleanBio,
+        flair: profileFlair,
+        featured_achievement: featuredAchievement || null,
+      }));
+      setProfileSaveMsg("✓ PROFILE UPDATED");
+      setTimeout(() => setProfileSaveMsg(""), 3000);
+    } else {
+      setProfileSaveMsg("✗ UPDATE FAILED — try again");
+      setTimeout(() => setProfileSaveMsg(""), 3000);
+    }
+  };
 
   return (
     <div style={{ padding: "56px 16px 80px" }}>
@@ -5969,247 +8199,189 @@ function OperatorScreen({
             {pathInfo.label} {pathInfo.emoji}
           </span>
         </div>
+        {/* ── FOLLOWER / FOLLOWING COUNTS ──────────────────────────────── */}
+        <div style={{ display: "flex", gap: 12, marginTop: 16 }}>
+          <div
+            onClick={async () => {
+              setListLoading(true);
+              setShowFollowerList(true);
+              const { data } = await supabase
+                .from("user_follows")
+                .select(
+                  "follower:follower_id(id, username, xp, path_alignment, persistence_streak, is_supporter)",
+                )
+                .eq("followed_id", userState.id)
+                .order("created_at", { ascending: false });
+              setFollowerList(
+                (data || []).map((r) => r.follower).filter(Boolean),
+              );
+              setListLoading(false);
+            }}
+            style={{
+              flex: 1,
+              background: theme.bg,
+              borderRadius: 8,
+              padding: "10px 0",
+              textAlign: "center",
+              border: "1px solid rgba(255,255,255,0.06)",
+              cursor: "pointer",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: "bold",
+                fontFamily: "monospace",
+                color: theme.text,
+              }}
+            >
+              {myFollowerCount}
+            </div>
+            <div
+              style={{
+                fontSize: 9,
+                color: "#888",
+                textTransform: "uppercase",
+                letterSpacing: 1,
+                marginTop: 2,
+              }}
+            >
+              Followers
+              {newFollowersThisWeek > 0 && (
+                <span
+                  style={{
+                    marginLeft: 4,
+                    background: theme.accent,
+                    color: "#000",
+                    borderRadius: 10,
+                    padding: "1px 5px",
+                    fontSize: 8,
+                    fontWeight: "bold",
+                  }}
+                >
+                  +{newFollowersThisWeek} this week
+                </span>
+              )}
+            </div>
+          </div>
+          <div
+            onClick={async () => {
+              setListLoading(true);
+              setShowFollowingList(true);
+              const { data } = await supabase
+                .from("user_follows")
+                .select(
+                  "followed:followed_id(id, username, xp, path_alignment, persistence_streak, is_supporter)",
+                )
+                .eq("follower_id", userState.id)
+                .order("created_at", { ascending: false });
+              setFollowingList(
+                (data || []).map((r) => r.followed).filter(Boolean),
+              );
+              setListLoading(false);
+            }}
+            style={{
+              flex: 1,
+              background: theme.bg,
+              borderRadius: 8,
+              padding: "10px 0",
+              textAlign: "center",
+              border: "1px solid rgba(255,255,255,0.06)",
+              cursor: "pointer",
+            }}
+          >
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: "bold",
+                fontFamily: "monospace",
+                color: theme.text,
+              }}
+            >
+              {myFollowingCount}
+            </div>
+            <div
+              style={{
+                fontSize: 9,
+                color: "#888",
+                textTransform: "uppercase",
+                letterSpacing: 1,
+                marginTop: 2,
+              }}
+            >
+              Following
+            </div>
+          </div>
+        </div>
+
+        {/* Followers list modal */}
+        {showFollowerList && (
+          <FollowListModal
+            title="Followers"
+            list={followerList}
+            loading={listLoading}
+            onClose={() => setShowFollowerList(false)}
+            theme={theme}
+          />
+        )}
+
+        {/* Following list modal */}
+        {showFollowingList && (
+          <FollowListModal
+            title="Following"
+            list={followingList}
+            loading={listLoading}
+            onClose={() => setShowFollowingList(false)}
+            theme={theme}
+          />
+        )}
       </div>
 
-      {/* NEW: RANKS PREVIEW */}
-      <h3
-        style={{
-          color: theme.text,
-          borderBottom: `1px solid ${theme.surface}`,
-          paddingBottom: 8,
-          marginTop: 24,
-        }}
-      >
-        Progression Tiers
-      </h3>
+      {/* ── PROGRESSION TIERS (always visible) ──────────────────────── */}
       <div
         style={{
           background: theme.surface,
-          borderRadius: 8,
-          padding: 12,
-          marginBottom: 24,
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-        }}
-      >
-        {RANKS.map((r) => (
-          <div
-            key={r.id}
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: 12,
-              color: userState.xp >= r.min ? theme.text : "#555",
-            }}
-          >
-            <span>
-              {r.icon} {r.name}
-            </span>
-            <span style={{ fontFamily: "monospace" }}>
-              {r.min.toLocaleString()} XP
-            </span>
-          </div>
-        ))}
-      </div>
-
-      <button
-        onClick={() => setScreen("choosePath")}
-        style={{
-          width: "100%",
-          padding: 14,
-          background: "transparent",
-          border: `1px dashed ${pathInfo.color}50`,
-          color: pathInfo.color,
-          borderRadius: 8,
-          cursor: "pointer",
-          fontFamily: "monospace",
-          marginBottom: 12,
-        }}
-      >
-        [ REALIGN PATH ]
-      </button>
-      <button
-        onClick={onSignOut}
-        style={{
-          width: "100%",
-          padding: 14,
-          background: "rgba(239, 68, 68, 0.1)",
-          border: "1px solid #ef444450",
-          color: "#ef4444",
-          borderRadius: 8,
-          cursor: "pointer",
-          fontFamily: "monospace",
-        }}
-      >
-        [ TERMINATE CONNECTION ]
-      </button>
-
-      {/* ── OPERATOR SETTINGS ────────────────────────────────────────── */}
-      <div
-        style={{
-          background: "#0a0a0a",
-          border: "1px solid #333",
-          borderRadius: 8,
+          borderRadius: 12,
           padding: 16,
-          marginBottom: 24,
+          marginBottom: 8,
+          border: "1px solid rgba(255,255,255,0.05)",
         }}
       >
         <div
           style={{
-            fontSize: 14,
-            color: theme.text,
-            marginBottom: 16,
+            fontSize: 11,
+            color: theme.accent,
+            fontFamily: "monospace",
             fontWeight: "bold",
             textTransform: "uppercase",
+            letterSpacing: 2,
+            marginBottom: 12,
           }}
         >
-          Uplink Settings
+          📈 Progression Tiers
         </div>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <input
-            type="text"
-            placeholder="New Handle"
-            value={newHandle}
-            onChange={(e) => setNewHandle(e.target.value)}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              padding: 10,
-              background: "#111",
-              border: "1px solid #333",
-              color: theme.text,
-              borderRadius: 4,
-              fontFamily: "monospace",
-            }}
-          />
-          <button
-            onClick={async () => {
-              if (!newHandle.trim()) {
-                setUpdateMsg("Enter a new handle.");
-                return;
-              }
-              const handleRegex = /^[a-zA-Z0-9_-]{3,16}$/;
-              if (!handleRegex.test(newHandle)) {
-                setUpdateMsg("3-16 chars. Letters, numbers, _ and - only.");
-                return;
-              }
-              const { error } = await supabase
-                .from("profiles")
-                .update({ username: newHandle.trim() })
-                .eq("id", userState.id);
-              setUpdateMsg(error ? error.message : "Handle updated.");
-              if (!error) setNewHandle("");
-            }}
-            style={{
-              flexShrink: 0,
-              padding: "0 16px",
-              background: "#333",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              fontWeight: "bold",
-              cursor: "pointer",
-            }}
-          >
-            UPDATE
-          </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          {RANKS.map((r) => (
+            <div
+              key={r.id}
+              style={{
+                display: "flex",
+                justifyContent: "space-between",
+                fontSize: 12,
+                color: userState.xp >= r.min ? theme.text : "#555",
+                padding: "4px 0",
+                borderBottom: "1px solid rgba(255,255,255,0.03)",
+              }}
+            >
+              <span>
+                {r.icon} {r.name}
+              </span>
+              <span style={{ fontFamily: "monospace" }}>
+                {r.min.toLocaleString()} XP{userState.xp >= r.min ? " ✓" : ""}
+              </span>
+            </div>
+          ))}
         </div>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
-          <input
-            type="email"
-            placeholder="New Email"
-            value={newEmail}
-            onChange={(e) => setNewEmail(e.target.value)}
-            style={{
-              flex: 1,
-              minWidth: 0,
-              padding: 10,
-              background: "#111",
-              border: "1px solid #333",
-              color: theme.text,
-              borderRadius: 4,
-              fontFamily: "monospace",
-            }}
-          />
-          <button
-            onClick={async () => {
-              if (!newEmail.trim()) {
-                setUpdateMsg("Enter a new email.");
-                return;
-              }
-              const { error } = await supabase.auth.updateUser({
-                email: newEmail.trim(),
-              });
-              setUpdateMsg(
-                error ? error.message : "Confirmation link sent to new email.",
-              );
-              if (!error) setNewEmail("");
-            }}
-            style={{
-              flexShrink: 0,
-              padding: "0 16px",
-              background: "#333",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              fontWeight: "bold",
-              cursor: "pointer",
-            }}
-          >
-            UPDATE
-          </button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={async () => {
-              const {
-                data: { user },
-              } = await supabase.auth.getUser();
-              if (!user) {
-                setUpdateMsg("Not authenticated.");
-                return;
-              }
-              const { error } = await supabase.auth.resetPasswordForEmail(
-                user.email,
-                { redirectTo: window.location.origin },
-              );
-              setUpdateMsg(
-                error
-                  ? error.message
-                  : "Password reset link sent to your email.",
-              );
-            }}
-            style={{
-              flex: 1,
-              padding: 10,
-              background: "#333",
-              color: "#fff",
-              border: "none",
-              borderRadius: 4,
-              fontWeight: "bold",
-              cursor: "pointer",
-            }}
-          >
-            SEND PASSWORD RESET
-          </button>
-        </div>
-
-        {updateMsg && (
-          <div
-            style={{
-              marginTop: 12,
-              fontSize: 12,
-              color: theme.accent,
-              fontFamily: "monospace",
-            }}
-          >
-            {updateMsg}
-          </div>
-        )}
       </div>
 
       {/* ── ACHIEVEMENTS PROGRESS ──────────────────────────────────── */}
@@ -6406,130 +8578,707 @@ function OperatorScreen({
         )}
       </div>
 
-      {/* ── GDPR DATA EXPORT ───────────────────────────────────────────── */}
-      <div
-        style={{
-          marginTop: 24,
-          padding: 16,
-          background: theme.surface,
-          borderRadius: 12,
-          border: "1px solid #333",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 11,
-            color: "#888",
-            fontFamily: "monospace",
-            marginBottom: 12,
-            fontWeight: "bold",
-            textTransform: "uppercase",
-            letterSpacing: 2,
-          }}
-        >
-          🗂 Data & Privacy
-        </div>
-        <div
-          style={{
-            fontSize: 11,
-            color: "#888",
-            marginBottom: 12,
-            lineHeight: 1.5,
-          }}
-        >
-          Export everything we store about you as JSON. Required under
-          GDPR/CCPA.
-        </div>
+      {/* ── PROFILE SETTINGS TAB ─────────────────────────────────────── */}
+      <div style={{ marginBottom: 8 }}>
         <button
-          onClick={() => {
-            const exportData = {
-              exported_at: new Date().toISOString(),
-              source: "Hacklingo",
-              profile: userState,
-            };
-            const blob = new Blob([JSON.stringify(exportData, null, 2)], {
-              type: "application/json",
-            });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement("a");
-            a.href = url;
-            a.download = `hacklingo-data-${userState.username}-${new Date().toISOString().split("T")[0]}.json`;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
-            setUpdateMsg("✓ Data export downloaded.");
-            setTimeout(() => setUpdateMsg(""), 3000);
-          }}
+          onClick={() => toggleTab("profile")}
           style={{
             width: "100%",
-            padding: 12,
-            background: "transparent",
-            border: "1px solid #555",
-            color: "#aaa",
-            borderRadius: 6,
-            cursor: "pointer",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "14px 16px",
+            background: theme.surface,
+            border: "1px solid rgba(255,255,255,0.07)",
+            borderRadius: openTab === "profile" ? "10px 10px 0 0" : 10,
+            color: theme.text,
             fontFamily: "monospace",
             fontSize: 12,
-          }}
-        >
-          ⬇ DOWNLOAD MY DATA
-        </button>
-      </div>
-
-      <div
-        style={{
-          marginTop: 32,
-          paddingTop: 24,
-          borderTop: "1px solid rgba(239, 68, 68, 0.2)",
-        }}
-      >
-        <div
-          style={{
-            fontSize: 11,
-            color: "#ef4444",
-            fontFamily: "monospace",
-            marginBottom: 12,
             fontWeight: "bold",
+            letterSpacing: 1.5,
+            cursor: "pointer",
+            textTransform: "uppercase",
           }}
         >
-          DANGER ZONE
-        </div>
-        <button
-          onClick={async () => {
-            if (
-              window.confirm(
-                "WARNING: This will permanently purge your Operator data. Proceed?",
-              )
-            ) {
-              const {
-                data: { session },
-              } = await supabase.auth.getSession();
-              const API_URL = Capacitor.isNativePlatform()
-                ? "https://hacklingo.tech/api/delete-account"
-                : "/api/delete-account";
+          <span>⚙️ Profile Settings</span>
+          <span style={{ color: "#666", fontSize: 14 }}>
+            {openTab === "profile" ? "▲" : "▼"}
+          </span>
+        </button>
+        {openTab === "profile" && (
+          <div
+            style={{
+              background: theme.surface,
+              border: "1px solid rgba(255,255,255,0.07)",
+              borderTop: "none",
+              borderRadius: "0 0 10px 10px",
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 10,
+                color: theme.accent,
+                fontFamily: "monospace",
+                fontWeight: "bold",
+                textTransform: "uppercase",
+                letterSpacing: 2,
+                marginBottom: 12,
+              }}
+            >
+              🎨 Customize Profile
+            </div>
+            {/* Flair emoji picker */}
+            <div style={{ marginBottom: 10 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "#888",
+                  fontFamily: "monospace",
+                  marginBottom: 6,
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                }}
+              >
+                Flair
+              </div>
+              <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                {[
+                  "⚔️",
+                  "🛡️",
+                  "🔮",
+                  "💀",
+                  "🐉",
+                  "🦾",
+                  "👁️",
+                  "🔥",
+                  "🧬",
+                  "⚡",
+                  "🕵️",
+                  "🐍",
+                ].map((f) => (
+                  <button
+                    key={f}
+                    onClick={() => setProfileFlair(f)}
+                    style={{
+                      fontSize: 20,
+                      background:
+                        profileFlair === f
+                          ? theme.accent + "30"
+                          : "transparent",
+                      border:
+                        profileFlair === f
+                          ? `1px solid ${theme.accent}`
+                          : "1px solid #333",
+                      borderRadius: 6,
+                      padding: "4px 8px",
+                      cursor: "pointer",
+                    }}
+                  >
+                    {f}
+                  </button>
+                ))}
+              </div>
+            </div>
+            {/* Bio */}
+            <div style={{ marginBottom: 10 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "#888",
+                  fontFamily: "monospace",
+                  marginBottom: 6,
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                }}
+              >
+                Bio (80 chars max)
+              </div>
+              <input
+                value={profileBio}
+                onChange={(e) => setProfileBio(e.target.value.slice(0, 80))}
+                placeholder="One line. Make it count."
+                style={{
+                  width: "100%",
+                  background: theme.bg,
+                  border: `1px solid ${theme.accent}30`,
+                  borderRadius: 6,
+                  padding: "8px 10px",
+                  color: theme.text,
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                  boxSizing: "border-box",
+                }}
+              />
+              <div
+                style={{
+                  fontSize: 9,
+                  color: "#555",
+                  fontFamily: "monospace",
+                  textAlign: "right",
+                  marginTop: 2,
+                }}
+              >
+                {profileBio.length}/80
+              </div>
+            </div>
+            {/* Featured achievement */}
+            <div style={{ marginBottom: 12 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "#888",
+                  fontFamily: "monospace",
+                  marginBottom: 6,
+                  textTransform: "uppercase",
+                  letterSpacing: 1,
+                }}
+              >
+                Featured Achievement
+              </div>
+              <select
+                value={featuredAchievement}
+                onChange={(e) => setFeaturedAchievement(e.target.value)}
+                style={{
+                  width: "100%",
+                  background: theme.bg,
+                  border: `1px solid ${theme.accent}30`,
+                  borderRadius: 6,
+                  padding: "8px 10px",
+                  color: theme.text,
+                  fontFamily: "monospace",
+                  fontSize: 12,
+                }}
+              >
+                <option value="">— None —</option>
+                {ACHIEVEMENTS.filter((a) =>
+                  userState.unlocked_achievements?.includes(a.id),
+                ).map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.icon} {a.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <button
+              onClick={handleSaveProfile}
+              disabled={profileSaving}
+              style={{
+                width: "100%",
+                padding: 10,
+                background: profileSaving ? "#333" : theme.accent,
+                color: profileSaving ? "#888" : "#000",
+                border: "none",
+                borderRadius: 8,
+                fontFamily: "monospace",
+                fontSize: 11,
+                fontWeight: "bold",
+                letterSpacing: 2,
+                cursor: profileSaving ? "wait" : "pointer",
+                transition: "background 0.2s",
+              }}
+            >
+              {profileSaving ? "SAVING..." : "SAVE PROFILE"}
+            </button>
+            {profileSaveMsg && (
+              <div
+                style={{
+                  textAlign: "center",
+                  fontSize: 11,
+                  color: profileSaveMsg.startsWith("✓") ? "#00ff88" : "#ef4444",
+                  fontFamily: "monospace",
+                  marginTop: 8,
+                  letterSpacing: 1,
+                }}
+              >
+                {profileSaveMsg}
+              </div>
+            )}
 
-              await fetch(API_URL, {
-                method: "POST",
-                headers: { Authorization: `Bearer ${session.access_token}` },
-              });
-              onSignOut();
-            }
-          }}
+            {/* ── REALIGN PATH (inside profile tab) ── */}
+            <button
+              onClick={() => setScreen("choosePath")}
+              style={{
+                width: "100%",
+                padding: 12,
+                marginTop: 16,
+                background: "transparent",
+                border: `1px dashed ${pathInfo.color}50`,
+                color: pathInfo.color,
+                borderRadius: 8,
+                cursor: "pointer",
+                fontFamily: "monospace",
+                fontSize: 12,
+                fontWeight: "bold",
+                letterSpacing: 1,
+              }}
+            >
+              [ REALIGN PATH ]
+            </button>
+            {/* ── UPLINK SETTINGS (inside profile tab) ── */}
+            <div style={{ marginTop: 16 }}>
+              <div
+                style={{
+                  fontSize: 10,
+                  color: "#888",
+                  fontFamily: "monospace",
+                  fontWeight: "bold",
+                  textTransform: "uppercase",
+                  letterSpacing: 2,
+                  marginBottom: 12,
+                }}
+              >
+                📡 Uplink Settings
+              </div>
+
+              {/* ── SOUND TOGGLE ── */}
+              {(() => {
+                const [soundsOff, setSoundsOff] = React.useState(
+                  () => localStorage.getItem("hl_sounds_off") === "1"
+                );
+                return (
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #1a1a1a", marginBottom: 14 }}>
+                    <div>
+                      <div style={{ fontSize: 13, color: theme.text, fontFamily: "monospace" }}>🔊 Sound Effects</div>
+                      <div style={{ fontSize: 10, color: "#666", marginTop: 2 }}>XP chimes, correct answers, achievements</div>
+                    </div>
+                    <button
+                      onClick={() => {
+                        const next = !soundsOff;
+                        setSoundsOff(next);
+                        localStorage.setItem("hl_sounds_off", next ? "1" : "0");
+                      }}
+                      style={{ padding: "6px 16px", background: soundsOff ? "#333" : theme.accent + "20", border: `1px solid ${soundsOff ? "#555" : theme.accent}`, color: soundsOff ? "#888" : theme.accent, borderRadius: 6, fontFamily: "monospace", fontSize: 11, fontWeight: "bold", cursor: "pointer", letterSpacing: 1 }}
+                    >
+                      {soundsOff ? "OFF" : "ON"}
+                    </button>
+                  </div>
+                );
+              })()}
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input
+                  type="text"
+                  placeholder="New Handle"
+                  value={newHandle}
+                  onChange={(e) => setNewHandle(e.target.value)}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: 10,
+                    background: "#111",
+                    border: "1px solid #333",
+                    color: theme.text,
+                    borderRadius: 4,
+                    fontFamily: "monospace",
+                  }}
+                />
+                <button
+                  onClick={async () => {
+                    if (!newHandle.trim()) {
+                      setUpdateMsg("Enter a new handle.");
+                      return;
+                    }
+                    const validationError = validateName(newHandle, "username");
+                    if (validationError) {
+                      setUpdateMsg(validationError);
+                      return;
+                    }
+                    const { error } = await supabase
+                      .from("profiles")
+                      .update({ username: newHandle.trim() })
+                      .eq("id", userState.id);
+                    if (!error) {
+                      setUserState((prev) => ({
+                        ...prev,
+                        username: newHandle.trim(),
+                      }));
+                      setUpdateMsg("✓ Handle updated.");
+                      setNewHandle("");
+                      setTimeout(() => setUpdateMsg(""), 3000);
+                    } else {
+                      setUpdateMsg(
+                        error.message.includes("unique")
+                          ? "That handle is already taken."
+                          : error.message,
+                      );
+                    }
+                  }}
+                  style={{
+                    flexShrink: 0,
+                    padding: "0 16px",
+                    background: "#333",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 4,
+                    fontWeight: "bold",
+                    cursor: "pointer",
+                  }}
+                >
+                  UPDATE
+                </button>
+              </div>
+
+              <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                <input
+                  type="email"
+                  placeholder="New Email"
+                  value={newEmail}
+                  onChange={(e) => setNewEmail(e.target.value)}
+                  style={{
+                    flex: 1,
+                    minWidth: 0,
+                    padding: 10,
+                    background: "#111",
+                    border: "1px solid #333",
+                    color: theme.text,
+                    borderRadius: 4,
+                    fontFamily: "monospace",
+                  }}
+                />
+                <button
+                  onClick={async () => {
+                    if (!newEmail.trim()) {
+                      setUpdateMsg("Enter a new email.");
+                      return;
+                    }
+                    const { error } = await supabase.auth.updateUser({
+                      email: newEmail.trim(),
+                    });
+                    setUpdateMsg(
+                      error
+                        ? error.message
+                        : "Confirmation link sent to new email.",
+                    );
+                    if (!error) setNewEmail("");
+                  }}
+                  style={{
+                    flexShrink: 0,
+                    padding: "0 16px",
+                    background: "#333",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 4,
+                    fontWeight: "bold",
+                    cursor: "pointer",
+                  }}
+                >
+                  UPDATE
+                </button>
+              </div>
+
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={async () => {
+                    const {
+                      data: { user },
+                    } = await supabase.auth.getUser();
+                    if (!user) {
+                      setUpdateMsg("Not authenticated.");
+                      return;
+                    }
+                    const { error } = await supabase.auth.resetPasswordForEmail(
+                      user.email,
+                      { redirectTo: window.location.origin },
+                    );
+                    setUpdateMsg(
+                      error
+                        ? error.message
+                        : "Password reset link sent to your email.",
+                    );
+                  }}
+                  style={{
+                    flex: 1,
+                    padding: 10,
+                    background: "#333",
+                    color: "#fff",
+                    border: "none",
+                    borderRadius: 4,
+                    fontWeight: "bold",
+                    cursor: "pointer",
+                  }}
+                >
+                  SEND PASSWORD RESET
+                </button>
+              </div>
+
+              {updateMsg && (
+                <div
+                  style={{
+                    marginTop: 12,
+                    fontSize: 12,
+                    color: theme.accent,
+                    fontFamily: "monospace",
+                  }}
+                >
+                  {updateMsg}
+                </div>
+              )}
+            </div>
+            {/* end uplink settings inner */}
+          </div>
+        )}
+        {/* end profile tab content */}
+      </div>
+      {/* end profile accordion */}
+
+      {/* ── DATA & PRIVACY TAB ──────────────────────────────────────── */}
+      <div style={{ marginBottom: 8, marginTop: 8 }}>
+        <button
+          onClick={() => toggleTab("data")}
           style={{
             width: "100%",
-            padding: 14,
-            background: "transparent",
-            border: "1px solid #ef444450",
-            color: "#ef4444",
-            borderRadius: 8,
-            cursor: "pointer",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "14px 16px",
+            background: theme.surface,
+            border: "1px solid rgba(255,255,255,0.07)",
+            borderRadius: openTab === "data" ? "10px 10px 0 0" : 10,
+            color: "#aaa",
             fontFamily: "monospace",
+            fontSize: 12,
+            fontWeight: "bold",
+            letterSpacing: 1.5,
+            cursor: "pointer",
+            textTransform: "uppercase",
           }}
         >
-          [ INITIATE ACCOUNT PURGE ]
+          <span>🗂 Data & Privacy</span>
+          <span style={{ color: "#666", fontSize: 14 }}>
+            {openTab === "data" ? "▲" : "▼"}
+          </span>
         </button>
+        {openTab === "data" && (
+          <div
+            style={{
+              background: theme.surface,
+              border: "1px solid rgba(255,255,255,0.07)",
+              borderTop: "none",
+              borderRadius: "0 0 10px 10px",
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                color: "#888",
+                marginBottom: 12,
+                lineHeight: 1.5,
+              }}
+            >
+              Export everything we store about you as JSON. Required under
+              GDPR/CCPA.
+            </div>
+            <button
+              onClick={() => {
+                const exportData = {
+                  exported_at: new Date().toISOString(),
+                  source: "Hacklingo",
+                  profile: userState,
+                };
+                const blob = new Blob([JSON.stringify(exportData, null, 2)], {
+                  type: "application/json",
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `hacklingo-data-${userState.username}-${new Date().toISOString().split("T")[0]}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
+                setUpdateMsg("✓ Data export downloaded.");
+                setTimeout(() => setUpdateMsg(""), 3000);
+              }}
+              style={{
+                width: "100%",
+                padding: 12,
+                background: "transparent",
+                border: "1px solid #555",
+                color: "#aaa",
+                borderRadius: 6,
+                cursor: "pointer",
+                fontFamily: "monospace",
+                fontSize: 12,
+              }}
+            >
+              ⬇ DOWNLOAD MY DATA
+            </button>
+            <div
+              style={{
+                marginTop: 12,
+                fontSize: 10,
+                color: "#555",
+                fontFamily: "monospace",
+              }}
+            >
+              <a href="/privacy" target="_blank" style={{ color: "#555" }}>
+                Privacy Policy
+              </a>{" "}
+              ·{" "}
+              <a href="/terms" target="_blank" style={{ color: "#555" }}>
+                Terms of Service
+              </a>
+            </div>
+          </div>
+        )}
       </div>
+
+      {/* ── DANGER ZONE TAB ─────────────────────────────────────────── */}
+      <div style={{ marginBottom: 8 }}>
+        <button
+          onClick={() => toggleTab("danger")}
+          style={{
+            width: "100%",
+            display: "flex",
+            justifyContent: "space-between",
+            alignItems: "center",
+            padding: "14px 16px",
+            background: "rgba(239,68,68,0.05)",
+            border: "1px solid rgba(239,68,68,0.2)",
+            borderRadius: openTab === "danger" ? "10px 10px 0 0" : 10,
+            color: "#ef4444",
+            fontFamily: "monospace",
+            fontSize: 12,
+            fontWeight: "bold",
+            letterSpacing: 1.5,
+            cursor: "pointer",
+            textTransform: "uppercase",
+          }}
+        >
+          <span>⚠️ Danger Zone</span>
+          <span style={{ color: "#ef444480", fontSize: 14 }}>
+            {openTab === "danger" ? "▲" : "▼"}
+          </span>
+        </button>
+        {openTab === "danger" && (
+          <div
+            style={{
+              background: "rgba(239,68,68,0.03)",
+              border: "1px solid rgba(239,68,68,0.2)",
+              borderTop: "none",
+              borderRadius: "0 0 10px 10px",
+              padding: 16,
+            }}
+          >
+            <div
+              style={{
+                fontSize: 11,
+                color: "#ef4444",
+                fontFamily: "monospace",
+                marginBottom: 12,
+              }}
+            >
+              This action is permanent and cannot be undone.
+            </div>
+            <button
+              onClick={async () => {
+                if (
+                  !window.confirm(
+                    "WARNING: This will permanently purge your Operator data. Proceed?",
+                  )
+                ) {
+                  return;
+                }
+                // Double confirm — this is irreversible
+                if (
+                  !window.confirm(
+                    "FINAL WARNING: This deletes your account, XP, streak, achievements, and all squad activity. There is no undo. Type-check yourself and confirm.",
+                  )
+                ) {
+                  return;
+                }
+
+                try {
+                  const {
+                    data: { session },
+                  } = await supabase.auth.getSession();
+                  if (!session) {
+                    alert("Session expired. Please log in and try again.");
+                    return;
+                  }
+
+                  const API_URL = Capacitor.isNativePlatform()
+                    ? "https://hacklingo.tech/api/delete-account"
+                    : "/api/delete-account";
+
+                  const res = await fetch(API_URL, {
+                    method: "POST",
+                    headers: {
+                      Authorization: `Bearer ${session.access_token}`,
+                      "Content-Type": "application/json",
+                    },
+                  });
+
+                  const result = await res.json().catch(() => ({}));
+
+                  if (res.ok) {
+                    // Success — sign out and let RootApp send them back to landing
+                    alert("Account purged. Goodbye, operator.");
+                    onSignOut();
+                  } else if (res.status === 207) {
+                    // Partial delete — auth user may or may not be gone
+                    console.error("Partial deletion:", result);
+                    alert(
+                      "Some data could not be cleared. Contact support@hacklingo.tech with this code: " +
+                        (result.failed || []).join(","),
+                    );
+                  } else {
+                    console.error("Delete failed:", res.status, result);
+                    alert(
+                      "Purge failed: " +
+                        (result.error || `HTTP ${res.status}`) +
+                        "\n\nNothing was deleted. Try again or contact support@hacklingo.tech.",
+                    );
+                  }
+                } catch (e) {
+                  console.error("Delete request threw:", e);
+                  alert(
+                    "Network error during purge. Nothing was deleted. Check your connection and try again.",
+                  );
+                }
+              }}
+              style={{
+                width: "100%",
+                padding: 14,
+                background: "transparent",
+                border: "1px solid #ef444450",
+                color: "#ef4444",
+                borderRadius: 8,
+                cursor: "pointer",
+                fontFamily: "monospace",
+              }}
+            >
+              [ INITIATE ACCOUNT PURGE ]
+            </button>
+          </div>
+        )}
+        {/* end danger tab */}
+      </div>
+      {/* end danger accordion */}
+
+      {/* ── TERMINATE CONNECTION ───────────────────────────────────── */}
+      <button
+        onClick={onSignOut}
+        style={{
+          width: "100%",
+          padding: 14,
+          marginTop: 8,
+          marginBottom: 8,
+          background: "rgba(239, 68, 68, 0.08)",
+          border: "1px solid #ef444450",
+          color: "#ef4444",
+          borderRadius: 8,
+          cursor: "pointer",
+          fontFamily: "monospace",
+          fontWeight: "bold",
+          letterSpacing: 2,
+          fontSize: 12,
+        }}
+      >
+        [ TERMINATE CONNECTION ]
+      </button>
 
       {userState.role === "admin" && (
         <div
@@ -6978,7 +9727,13 @@ function DynamicLessonScreen({
                 }}
               />
               <div
-                style={{ color: "#888", whiteSpace: "pre-wrap", marginTop: 8, overflowX: "auto", wordBreak: "break-all" }}
+                style={{
+                  color: "#888",
+                  whiteSpace: "pre-wrap",
+                  marginTop: 8,
+                  overflowX: "auto",
+                  wordBreak: "break-all",
+                }}
               >
                 {current.code_after}
               </div>
@@ -6996,6 +9751,7 @@ function DynamicLessonScreen({
 
                   if (normalizedInput === normalizedAnswer) {
                     setAnswered(true);
+                    playSound("correct_answer");
                   } else {
                     alert(
                       `Syntax Error.\n\nHint: We are looking for exactly:\n${current.correct_answer}`,
@@ -7046,7 +9802,8 @@ function DynamicLessonScreen({
                 const correctIdx = parseInt(current.correct, 10);
                 const isDisabledWrong = disabledOptions.includes(i);
                 const isFinalized =
-                  (answered && (selectedOption === correctIdx || answerForcedReveal)) ||
+                  (answered &&
+                    (selectedOption === correctIdx || answerForcedReveal)) ||
                   wrongAttempts >= 3;
                 let bg = theme.surface,
                   border = "1px solid #333",
@@ -7660,8 +10417,12 @@ export default function App() {
           referral_code: data.referral_code || null,
           referral_count: data.referral_count || 0,
           unlocked_achievements: data.unlocked_achievements || [],
+          claimed_achievements: data.claimed_achievements || [],
           onboarding_completed: data.onboarding_completed || false,
           streak_broken_dates: data.streak_broken_dates || [],
+          created_at: data.created_at || null,
+          night_owl: data.night_owl || false,
+          max_daily_lessons: data.max_daily_lessons || 0,
         });
 
         // Persist all computed updates to Supabase
@@ -7754,9 +10515,10 @@ export default function App() {
 
   const handleLessonComplete = async (lessonMeta) => {
     const isAlreadyDone = userState.completedModules.includes(lessonMeta.id);
-    const todayStr = new Date().toLocaleDateString("en-CA");
+    const todayStr = new Date().toLocaleDateString("en-CA"); // YYYY-MM-DD local
 
     let profileUpdates = {};
+    const rankBefore = getRank(userState.xp).id;
     // 1. Create a master clone of the state to hold all updates safely
     let updatedState = { ...userState };
 
@@ -7767,18 +10529,13 @@ export default function App() {
       profileUpdates.threads = updatedState.threads;
     }
 
-    // 3. Calculate Streak Logic
-    if (userState.last_active_date !== todayStr) {
-      updatedState.persistence_streak =
-        (updatedState.persistence_streak || 0) + 1;
-      updatedState.last_active_date = todayStr;
+    // 3. Streak math is ENTIRELY server-side now.
+    //    The client used to do its own streak increment and then the RPC
+    //    would overwrite — but if the RPC's UTC-based math disagreed with
+    //    the client's local-date math, the streak would visibly reset on
+    //    every lesson. Now we just trust whatever the RPC returns.
 
-      profileUpdates.persistence_streak = updatedState.persistence_streak;
-      profileUpdates.last_active_date = todayStr;
-      profileUpdates.last_active = new Date().toISOString();
-    }
-
-    // 4. Calculate XP and Hashes
+    // 4. Calculate XP and Hashes (optimistic; RPC will return authoritative)
     if (!isAlreadyDone) {
       let earnedXp = lessonMeta.xp;
 
@@ -7796,13 +10553,9 @@ export default function App() {
         ...updatedState.completedModules,
         lessonMeta.id,
       ];
-
-      profileUpdates.xp = updatedState.xp;
-      profileUpdates.hashes = updatedState.hashes;
-      profileUpdates.completed_modules = updatedState.completedModules;
     }
 
-    // 5. Instantly force the UI to update with the new threads, XP, and streaks
+    // 5. Instantly force the UI to update with the optimistic values
     setUserState(updatedState);
 
     // 6. Persist updates. Use the anti-cheat RPC for XP/hash/streak awards
@@ -7816,6 +10569,7 @@ export default function App() {
           {
             lesson_id: lessonMeta.id,
             lesson_xp: lessonMeta.xp,
+            client_date: todayStr,
           },
         );
         if (rpcError) {
@@ -7829,9 +10583,17 @@ export default function App() {
           updatedState.hashes = rpcData.hashes;
           if (typeof rpcData.persistence_streak === "number") {
             updatedState.persistence_streak = rpcData.persistence_streak;
+            updatedState.last_active_date = todayStr;
+          }
+          if (typeof rpcData.last_streak === "number") {
+            updatedState.last_streak = rpcData.last_streak;
           }
           // Re-set state with the corrected values
           setUserState(updatedState);
+          // Fire rank-up sound if the player crossed a rank threshold
+          if (getRank(updatedState.xp).id !== rankBefore) {
+            playSound("rank_up");
+          }
         }
       } catch (e) {
         console.error("award_lesson_completion threw:", e);
@@ -7851,6 +10613,27 @@ export default function App() {
 
     // 7. Play success sound and fire achievement check
     playSound("lesson_complete");
+
+    // Night Owl: lesson completed between midnight and 4 AM local time
+    const localHour = new Date().getHours();
+    if (!isAlreadyDone && localHour >= 0 && localHour < 4 && !updatedState.night_owl) {
+      updatedState.night_owl = true;
+      await supabase.from("profiles").update({ night_owl: true }).eq("id", updatedState.id);
+      setUserState((prev) => ({ ...prev, night_owl: true }));
+    }
+
+    // max_daily_lessons: count completions today, update if new high
+    if (!isAlreadyDone) {
+      const todayKey = `hl_daily_${todayStr}`;
+      const todayCount = (parseInt(localStorage.getItem(todayKey) || "0", 10)) + 1;
+      localStorage.setItem(todayKey, String(todayCount));
+      if (todayCount > (updatedState.max_daily_lessons || 0)) {
+        updatedState.max_daily_lessons = todayCount;
+        await supabase.from("profiles").update({ max_daily_lessons: todayCount }).eq("id", updatedState.id);
+        setUserState((prev) => ({ ...prev, max_daily_lessons: todayCount }));
+      }
+    }
+
     checkAchievements(updatedState);
 
     // Trigger ad interstitial every 3rd lesson for non-supporters
@@ -7962,6 +10745,7 @@ export default function App() {
       if (data.unlocked_themes) newState.unlocked_themes = data.unlocked_themes;
       if (data.active_theme) newState.active_theme = data.active_theme;
       setUserState(newState);
+      playSound("purchase");
     } catch (e) {
       console.error("make_purchase failed:", e);
       const errMsg = e.message || e.error_description || "PURCHASE FAILED";
@@ -7992,6 +10776,7 @@ export default function App() {
 
     setUserState({ ...userState, ...updates });
     await updateProfile(updates);
+    playSound("overclock");
   };
 
   const handleEquipTheme = async (themeId) => {
@@ -8031,8 +10816,9 @@ export default function App() {
       .then(() => {})
       .catch((e) => console.error("Achievement persist failed:", e));
 
-    // Show toast for the first newly-unlocked achievement
+    // Show toast + sound for the first newly-unlocked achievement
     const first = newlyUnlocked[0];
+    playSound("achievement");
     setThreadWarning(`🏆 ACHIEVEMENT UNLOCKED: ${first.icon} ${first.name}`);
     setTimeout(() => setThreadWarning(""), 4500);
   };
@@ -8047,7 +10833,12 @@ export default function App() {
       setUserState({ ...userState, is_supporter: true });
       await updateProfile({ is_supporter: true });
     } else if (type === "reset") {
-      if (!window.confirm("WIPE all stats for this account? This cannot be undone.")) return;
+      if (
+        !window.confirm(
+          "WIPE all stats for this account? This cannot be undone.",
+        )
+      )
+        return;
       const resetFields = {
         xp: 0,
         hashes: 0,
@@ -8420,6 +11211,43 @@ export default function App() {
                 userState={userState}
                 theme={activeTheme}
                 onClose={() => setShowAchievements(false)}
+                onClaim={async (achievement) => {
+                  const claimed = userState.claimed_achievements || [];
+                  if (claimed.includes(achievement.id)) return;
+                  const xpGain = achievement.reward?.xp || 0;
+                  const hashGain = achievement.reward?.hashes || 0;
+                  // Use SECURITY DEFINER RPC — direct .update({ xp, hashes })
+                  // is blocked by RLS anti-cheat policies and silently fails.
+                  const { data: rpcData, error } = await supabase.rpc(
+                    "claim_achievement",
+                    {
+                      p_achievement_id: achievement.id,
+                      p_xp_reward: xpGain,
+                      p_hash_reward: hashGain,
+                    },
+                  );
+                  if (!error && rpcData?.ok) {
+                    setUserState((prev) => ({
+                      ...prev,
+                      claimed_achievements: [
+                        ...(prev.claimed_achievements || []),
+                        achievement.id,
+                      ],
+                      xp: rpcData.xp,
+                      hashes: rpcData.hashes,
+                    }));
+                    playSound("claim_achievement");
+                    setShowAchievements(false);
+                    setTimeout(() => {
+                      setThreadWarning(
+                        `🏆 REWARD CLAIMED: ${achievement.icon} ${achievement.name}${xpGain > 0 ? ` +${xpGain.toLocaleString()} XP` : ""}${hashGain > 0 ? ` +${hashGain.toLocaleString()} #` : ""}`,
+                      );
+                      setTimeout(() => setThreadWarning(""), 4500);
+                    }, 200);
+                  } else {
+                    console.error("claim_achievement failed:", error);
+                  }
+                }}
               />
             )}
 

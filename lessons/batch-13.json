@@ -1,0 +1,342 @@
+{
+  "mod_cryp_2": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Mixing Paint",
+        "body": "Imagine you and a friend each pick a private color of paint. You want to agree on a shared secret color, but anyone watching the road between you sees every can you ship. The trick: you each mix your private color with a public color, swap the mixtures, then mix in your private color again on arrival. The eavesdropper watches mixtures go by but cannot un-mix paint.\n\nDiffie-Hellman is that paint trick, except with numbers and a problem called the discrete logarithm. It is how two parties who have never spoken before agree on a shared encryption key over a hostile network. Every HTTPS handshake on Earth depends on some variant of this idea."
+      },
+      {
+        "type": "concept",
+        "heading": "The Math",
+        "body": "Both sides agree publicly on a large prime p and a generator g — these are not secret. Alice picks a private integer a, computes g^a mod p, and ships it. Bob picks a private integer b, computes g^b mod p, and ships it. Each side then raises the OTHER side's public value to their own private exponent.\n\nAlice computes (g^b)^a mod p. Bob computes (g^a)^b mod p. Both land on g^(ab) mod p — the shared secret. To recover a or b from what crossed the wire, an attacker has to solve the discrete log problem in a 2048-bit prime field. That is not happening on any computer currently in existence.\n\nNothing called 'the secret' is ever transmitted. The secret is built in parallel on both ends from public material plus private knowledge."
+      },
+      {
+        "type": "code",
+        "heading": "Toy DH by hand",
+        "body": "Walk through the full exchange with numbers small enough to verify on paper. Same logic, same math, just smaller.",
+        "code": "# Diffie-Hellman with toy numbers — small enough to follow by hand\np = 23                       # Public prime modulus (real ones are ~2048 bits)\ng = 5                        # Public generator (a primitive root mod p)\n\n# Alice picks her private key in secret and computes a public value\nalice_private = 6\nalice_public = pow(g, alice_private, p)   # g^a mod p\n\n# Bob does the same on his end\nbob_private = 15\nbob_public = pow(g, bob_private, p)       # g^b mod p\n\n# They swap publics over the wire. Eavesdroppers see these.\n# Each side raises the OTHER side's public to their own private exponent.\nalice_shared = pow(bob_public, alice_private, p)\nbob_shared = pow(alice_public, bob_private, p)\n\nprint(alice_shared == bob_shared)         # True — same secret, never transmitted"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Pick a generator",
+        "context": "Declare the public generator named \"g\" and assign it the integer value 5, matching the example above.",
+        "code_before": "p = 23                       # Public prime\n",
+        "code_after": "\n\nalice_private = 6\nalice_public = pow(g, alice_private, p)",
+        "correct_answer": "g = 5"
+      },
+      {
+        "type": "code",
+        "heading": "Real-sized DH",
+        "body": "Toy numbers are for illustration. Production DH uses 2048-bit primes from RFC 3526 and a CSPRNG for the private exponent.",
+        "code": "import secrets\n\n# RFC 3526 group 14 — first 192 bits of a 2048-bit prime, abbreviated here\np = int(\"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1\", 16)\ng = 2                                     # Standard generator for this group\n\n# Cryptographically random private exponent in the range [1, p-2]\npriv = secrets.randbelow(p - 2) + 1\n\n# Compute the public value to send to the peer\npub = pow(g, priv, p)\n\n# Suppose the peer's public arrived from the network\npeer_pub = 0xDEADBEEFCAFE                 # Stand-in for the real value\n\n# Derive the shared secret — never log this, never transmit this\nshared = pow(peer_pub, priv, p)\nprint(f\"shared secret bit-length: {shared.bit_length()}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Derive the shared secret",
+        "context": "Compute the shared secret by calling \"pow\" with three arguments — \"peer_pub\", \"priv\", and \"p\" — in that order.",
+        "code_before": "import secrets\n\np = int(\"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1\", 16)\ng = 2\npriv = secrets.randbelow(p - 2) + 1\npub = pow(g, priv, p)\n\n# Received from the peer\npeer_pub = 0xDEADBEEFCAFE\n\nshared = ",
+        "code_after": "\nprint(shared.bit_length())",
+        "correct_answer": "pow(peer_pub, priv, p)"
+      },
+      {
+        "type": "concept",
+        "heading": "No Auth, No Trust",
+        "body": "Diffie-Hellman gives you confidentiality from a passive eavesdropper. It gives you nothing against an active attacker sitting in the middle. Eve can intercept Alice's public, ship her own public to Bob, do the same in reverse, and end up with two shared secrets — one with each party. Both Alice and Bob think they have a secure channel. Eve decrypts and re-encrypts every message at her leisure.\n\nThis is why every real protocol bolts authentication onto DH. TLS signs the DH parameters with a certificate. SSH verifies the host key fingerprint. Signal uses long-term identity keys. Raw DH between strangers is a man-in-the-middle attack with extra steps.\n\nOther traps: tiny private exponents (use a CSPRNG, not random.randint), non-prime moduli, small-subgroup attacks if you skip parameter validation, and recycling the same DH keypair across sessions. Use established libraries with vetted parameter sets unless you enjoy seeing CVE numbers next to your name."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Sample a private exponent",
+        "context": "Generate a private exponent in [1, p-2] by calling \"secrets.randbelow\" on \"p - 2\" and adding 1 to the result, then assign it to \"priv\".",
+        "code_before": "import secrets\n\np = int(\"FFFFFFFFFFFFFFFFC90FDAA22168C234C4C6628B80DC1CD1\", 16)\ng = 2\n\n# Avoid trivial keys at 0 or p-1 — shift into [1, p-2]\npriv = ",
+        "code_after": "\npub = pow(g, priv, p)\nprint(pub.bit_length())",
+        "correct_answer": "secrets.randbelow(p - 2) + 1"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You roll your own protocol: Alice and Bob open a plain TCP socket, perform Diffie-Hellman to agree on an AES key, then start encrypting. No certificates, no signatures, no out-of-band fingerprint check. Eve sits on the wire as a transparent proxy. What does she walk away with?",
+        "options": [
+          "A full man-in-the-middle: two independent DH sessions, complete plaintext access in real time.",
+          "Nothing useful — DH protects against active attackers by design.",
+          "Just metadata — she sees timing and packet sizes but no plaintext.",
+          "Only the first message, until AES key rotation kicks in."
+        ],
+        "correct": 0,
+        "hint": "DH proves nothing about who you are talking to. Without authentication of the public values, who is on the other end of the line?"
+      }
+    ]
+  },
+  "mod_cryp_3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Why Plain Hashes Lose",
+        "body": "A breach hits the news every other week and the same line shows up: 'passwords were hashed.' Cool. Were they salted? Were they slow? Because if the answer is just 'SHA-256,' those passwords are already cracked.\n\nA hash function is one-way: easy forward, hard backward. The trouble is, attackers do not need to reverse the function. They precompute the hashes of every common password, every dictionary word, every leaked password from prior breaches — millions of digests in a giant lookup table. Steal the hash database, run it against the table, score nine-tenths of the users in seconds. That table has a name: a rainbow table."
+      },
+      {
+        "type": "concept",
+        "heading": "Salt and Cost",
+        "body": "Two defenses turn this around. First, the salt — a random per-user value mixed into the hash. Now the same password yields a different digest for every user, and a precomputed table is useless because the attacker would have to rebuild it per salt. Salts do not need to be secret; they need to be unique.\n\nSecond, the cost — make each hash deliberately slow. Modern algorithms like bcrypt, scrypt, and Argon2 are tunable: bcrypt's cost factor doubles the work each step up; Argon2 lets you crank memory and parallelism. The legitimate server hashes once per login, no big deal. The attacker hashes a billion guesses, and now a billion times slow is the difference between cracking the database in an hour and cracking it in a century.\n\nUse a password hash. Not SHA-256. Not MD5. Not your clever HMAC construction. A password hash."
+      },
+      {
+        "type": "code",
+        "heading": "How NOT to do it",
+        "body": "This is the bad pattern, documented so you can recognize it in a code review and replace it. SHA-256 is a beautiful hash function — for files, for blockchains, not for passwords.",
+        "code": "import hashlib\n\n# DANGER — this is the pattern that gets companies on the news\npassword = \"hunter2\"\n\n# Encode to bytes because sha256 does not eat str directly\ndata = password.encode()\n\n# Build the hash object and feed it the bytes\nh = hashlib.sha256(data)\n\n# Get the final digest as a hex string suitable for storage\ndigest = h.hexdigest()\nprint(digest)  # Same input always produces same output — rainbow table heaven\n\n# A GPU rig will compute roughly 10 billion of these per second.\n# A single $1500 box clears most password databases overnight."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Finish the bad hash",
+        "context": "Get the final hex string from the hash object \"h\" by calling its \".hexdigest()\" method.",
+        "code_before": "import hashlib\n\npassword = \"hunter2\"\nh = hashlib.sha256(password.encode())\ndigest = ",
+        "code_after": "\nprint(digest)",
+        "correct_answer": "h.hexdigest()"
+      },
+      {
+        "type": "code",
+        "heading": "Bcrypt the right way",
+        "body": "Bcrypt has been around since 1999 and it is still acceptable for new code. It bakes in the salt, includes a tunable cost factor, and refuses to be misused in obvious ways.",
+        "code": "import bcrypt\n\n# Bcrypt operates on bytes, not str\npassword = b\"hunter2\"\n\n# Cost factor 12 = 2^12 rounds. Bump higher as hardware improves.\nsalt = bcrypt.gensalt(rounds=12)\n\n# Hash — output bundles algorithm version, cost, salt, and digest in one string\nhashed = bcrypt.hashpw(password, salt)\nprint(hashed)  # b'$2b$12$....'\n\n# On login, verify with checkpw — constant-time comparison built in\nguess = b\"hunter2\"\nok = bcrypt.checkpw(guess, hashed)\nprint(ok)      # True if the guess matches the stored hash"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Tune the work factor",
+        "context": "Generate a bcrypt salt with cost factor 12 by calling \"bcrypt.gensalt\" with the keyword argument \"rounds=12\".",
+        "code_before": "import bcrypt\n\npassword = b\"correct horse battery staple\"\n\n# Cost factor 12 — about a quarter second per hash on modern hardware\nsalt = ",
+        "code_after": "\nhashed = bcrypt.hashpw(password, salt)\nprint(hashed)",
+        "correct_answer": "bcrypt.gensalt(rounds=12)"
+      },
+      {
+        "type": "concept",
+        "heading": "Traps and Variations",
+        "body": "A few traps to file away. Bcrypt silently truncates inputs longer than 72 bytes — pre-hash with SHA-256 if you allow long passphrases, or pick Argon2id which has no such limit. Never compare hashes with `==` on your own; use the library's verify function so timing attacks do not leak which prefix matched.\n\nA 'pepper' is a server-wide secret mixed in before hashing. It lives in your config or HSM, not the database, so a database-only breach does not expose hashes for offline cracking. Useful as defense-in-depth, never a replacement for a real password hash.\n\nWork factors should migrate. The 2010 default is laughable in 2026. When a user logs in, check whether their stored hash uses your current cost; if not, re-hash with the new cost while you have the plaintext. And the eternal rule: do not invent your own scheme. The graveyard is full of 'I just SHA-256'd it twice with the username' designs."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Verify a login",
+        "context": "Verify that \"guess\" matches the stored value \"hashed\" by calling \"bcrypt.checkpw\" with those two arguments in that order.",
+        "code_before": "import bcrypt\n\n# Loaded from the user database\nhashed = b\"$2b$12$abcd...stored_hash...\"\n\n# Came in from the login form\nguess = b\"hunter2\"\n\n# Constant-time comparison — do NOT use == here\nok = ",
+        "code_after": "\nif ok:\n    print(\"login success\")",
+        "correct_answer": "bcrypt.checkpw(guess, hashed)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "An auditor asks why your service stores user passwords as bcrypt with cost 12 plus a per-user random salt rather than as plain SHA-256 plus a salt. What is the strongest single-sentence justification?",
+        "options": [
+          "SHA-256 is too fast — even with salt, an attacker with GPUs can guess billions per second; bcrypt's cost factor makes guessing economically infeasible.",
+          "SHA-256 produces 256-bit outputs which collide more often than bcrypt's 184-bit outputs.",
+          "Bcrypt is required by GDPR; SHA-256 is not.",
+          "Salt makes SHA-256 reversible; bcrypt prevents reversal."
+        ],
+        "correct": 0,
+        "hint": "The salt already defeats precomputed tables. Something else has to defeat raw guessing speed."
+      }
+    ]
+  },
+  "mod_cryp_4": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Two Keys, One Trick",
+        "body": "RSA is the asymmetric workhorse: one key encrypts, a different key decrypts. Hand the encryption key to the world, keep the decryption key locked up, and anyone can send you a message that only you can read. The same setup runs backwards for signatures — sign with your private key, anyone verifies with your public key.\n\nThe whole structure leans on a single hard problem: factoring large semiprimes. Multiplying two big primes is trivial. Recovering them from the product is the kind of hard that has resisted attack for half a century. Your private key is essentially 'I know the factors.' Your public key is essentially 'here is the product.'"
+      },
+      {
+        "type": "concept",
+        "heading": "The Key Schedule",
+        "body": "You pick two large primes p and q. The modulus is n = p * q — that goes into the public key. Euler's totient phi = (p-1)(q-1) is needed for derivation but immediately discarded. The public exponent e is conventionally 65537, a small prime that makes encryption fast. The private exponent d is the modular inverse of e mod phi.\n\nTo encrypt m: ciphertext = m^e mod n. To decrypt c: plaintext = c^d mod n. The math collapses correctly because of Fermat's little theorem and the way d was chosen.\n\nKey size matters. 1024-bit RSA is breakable by state actors. 2048-bit is the current floor. 3072-bit and up for anything that needs to stay confidential past 2030. And critically: textbook RSA — the raw formulas above — is broken in countless ways. You always wrap it in padding (OAEP for encryption, PSS for signatures) that adds randomness and structure."
+      },
+      {
+        "type": "code",
+        "heading": "Toy RSA by hand",
+        "body": "Walk the full key schedule with tiny primes so the arithmetic is checkable. Same math as the real thing, just within reach.",
+        "code": "# Toy RSA — these primes are tiny enough to factor in milliseconds, never use IRL\np = 61\nq = 53\n\n# Public modulus — appears in every operation\nn = p * q                    # 3233\n\n# Euler's totient — used once, then immediately forgotten\nphi = (p - 1) * (q - 1)      # 3120\n\n# Public exponent — usually 65537, here 17 for legibility\ne = 17\n\n# Private exponent — modular inverse of e mod phi (Python 3.8+ native)\nd = pow(e, -1, phi)\n\n# Encrypt a message m where m < n\nm = 123\nciphertext = pow(m, e, n)    # m^e mod n\n\n# Decrypt with the private exponent\nplaintext = pow(ciphertext, d, n)\nprint(plaintext)             # 123 — round trip succeeds"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Public modulus",
+        "context": "Compute the public modulus by multiplying \"p\" and \"q\", assigning the result to a variable named \"n\".",
+        "code_before": "p = 61\nq = 53\n\n# Public modulus appears in every RSA operation\n",
+        "code_after": "\nphi = (p - 1) * (q - 1)\nprint(n, phi)",
+        "correct_answer": "n = p * q"
+      },
+      {
+        "type": "code",
+        "heading": "Production RSA",
+        "body": "Real code does not hand-roll the math. It uses a vetted library that picks safe primes, applies OAEP padding, and clears intermediate values. This is the shape of what production looks like.",
+        "code": "from cryptography.hazmat.primitives.asymmetric import rsa, padding\nfrom cryptography.hazmat.primitives import hashes\n\n# 2048-bit keypair — 3072+ for long-term confidentiality\npriv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)\npub_key = priv_key.public_key()\n\n# Encrypt with OAEP — never use raw RSA or PKCS#1 v1.5 for new code\nciphertext = pub_key.encrypt(\n    b\"top secret payload\",\n    padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()),\n                 algorithm=hashes.SHA256(), label=None)\n)\n\n# Decrypt with matching padding parameters — mismatch raises an error\nplaintext = priv_key.decrypt(ciphertext, padding.OAEP(\n    mgf=padding.MGF1(algorithm=hashes.SHA256()),\n    algorithm=hashes.SHA256(), label=None))\nprint(plaintext)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Extract the public key",
+        "context": "Derive the public key from \"priv_key\" by calling its \".public_key()\" method.",
+        "code_before": "from cryptography.hazmat.primitives.asymmetric import rsa\n\npriv_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)\n\n# The public half goes to anyone who wants to encrypt to you\npub_key = ",
+        "code_after": "\nprint(pub_key.key_size)",
+        "correct_answer": "priv_key.public_key()"
+      },
+      {
+        "type": "concept",
+        "heading": "Where RSA Breaks",
+        "body": "Textbook RSA — the raw `m^e mod n` from step 3 — is broken in production. With a small e and no padding, short messages can be recovered by taking the e-th root directly. Identical plaintexts produce identical ciphertexts, leaking information. Padding oracle attacks like Bleichenbacher's 1998 result against PKCS#1 v1.5 still take down servers that ignored 25 years of warnings. Always use OAEP for encryption and PSS for signatures.\n\nKey generation has its own pitfalls. If two distinct RSA keys share a prime factor — which happens when entropy is weak at boot time — you can compute GCDs of public moduli and instantly factor both. This has been documented at scale across embedded device populations. Use a strong CSPRNG, and use the library's key generator.\n\nRSA itself is slow on large payloads. The standard pattern is hybrid: generate a random symmetric key, encrypt the payload with AES-GCM, encrypt the symmetric key with RSA. RSA carries the key, AES carries the data."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Private exponent",
+        "context": "Compute the private exponent \"d\" as the modular inverse of \"e\" modulo \"phi\" by calling \"pow\" with -1 as the exponent.",
+        "code_before": "p = 61\nq = 53\nn = p * q\nphi = (p - 1) * (q - 1)\ne = 17\n\n# Private exponent — d = e^(-1) mod phi\n",
+        "code_after": "\nprint(d)\nassert (e * d) % phi == 1",
+        "correct_answer": "d = pow(e, -1, phi)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "A junior dev's pull request encrypts a session token using raw RSA — pub_key.encrypt(token, padding.PKCS1v15()) — with the comment 'OAEP looked complicated.' Why do you block the merge?",
+        "options": [
+          "PKCS#1 v1.5 padding is vulnerable to Bleichenbacher-style padding oracle attacks; OAEP is required for new RSA encryption code.",
+          "PKCS#1 v1.5 cannot encrypt tokens longer than 11 bytes.",
+          "Raw RSA only works with 4096-bit keys.",
+          "PKCS#1 v1.5 returns hex strings instead of bytes."
+        ],
+        "correct": 0,
+        "hint": "It is not about output format or key size. It is about a real-world attack with a famous name from 1998 that gets re-discovered every few years."
+      }
+    ]
+  },
+  "mod_cryp_boss": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Encrypt AND Authenticate",
+        "body": "Encryption keeps data secret. Authentication proves data has not been tampered with. Run them separately and you eventually mess up the composition — one of the most common cryptographic foot-guns of the 2000s. AEAD ciphers solve this by doing both in one operation: Authenticated Encryption with Associated Data.\n\nAES-GCM is the AEAD that runs the modern internet. Every TLS 1.3 connection, most VPN protocols, disk encryption on your phone — all GCM under the hood. It is fast, well-studied, and CPUs from the last decade have hardware instructions for it built right in."
+      },
+      {
+        "type": "concept",
+        "heading": "Nonce, Tag, Galois",
+        "body": "GCM combines AES in counter mode with a Galois-field authenticator. You provide three things: a key (typically 256 bits), a nonce (96 bits is the standard), and a plaintext. You optionally provide associated data — bytes that get authenticated but not encrypted, useful for headers, packet IDs, anything the receiver needs in cleartext but must verify.\n\nThe output is ciphertext plus a 128-bit authentication tag. The receiver, given the same key, nonce, and associated data, decrypts and verifies in one shot. If any byte is flipped — ciphertext, AAD, tag, anything — decryption fails loudly with an InvalidTag exception. No silent corruption.\n\nThe golden rule of GCM: a (key, nonce) pair must never repeat. Ever. Reuse a nonce under the same key twice and you have not only broken confidentiality of those two messages, you have leaked the authentication subkey and an attacker can forge arbitrary messages going forward. This is the single biggest mistake in real-world GCM deployments."
+      },
+      {
+        "type": "code",
+        "heading": "Encrypt and decrypt",
+        "body": "The minimum viable GCM round trip — generate a key, generate a nonce, encrypt, decrypt. The library handles the tag invisibly: appended to the ciphertext on encrypt, stripped on decrypt.",
+        "code": "import os\nfrom cryptography.hazmat.primitives.ciphers.aead import AESGCM\n\n# 256-bit key from a CSPRNG — AESGCM ships a helper for this\nkey = AESGCM.generate_key(bit_length=256)\nc = AESGCM(key)\n\n# 96-bit nonce — GCM's recommended size. UNIQUE per (key, message).\nnonce = os.urandom(12)\n\n# Encrypt — output = ciphertext || 16-byte auth tag, concatenated\nplaintext = b\"the launch codes are 0000\"\nct = c.encrypt(nonce, plaintext, None)\n\n# Decrypt — raises cryptography.exceptions.InvalidTag on any tampering\nrecovered = c.decrypt(nonce, ct, None)\nprint(recovered)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Generate a nonce",
+        "context": "Allocate a 12-byte (96-bit) nonce by calling \"os.urandom\" with the integer 12, assigning to a variable named \"nonce\".",
+        "code_before": "import os\nfrom cryptography.hazmat.primitives.ciphers.aead import AESGCM\n\nkey = AESGCM.generate_key(bit_length=256)\nc = AESGCM(key)\n\n# Each message under this key needs a unique nonce\n",
+        "code_after": "\nct = c.encrypt(nonce, b\"payload\", None)\nprint(ct.hex())",
+        "correct_answer": "nonce = os.urandom(12)"
+      },
+      {
+        "type": "code",
+        "heading": "Associated data",
+        "body": "Headers, packet sequence numbers, recipient IDs — the metadata your protocol needs in cleartext but must not let an attacker forge. Pass them as associated_data to bind them cryptographically to the ciphertext.",
+        "code": "import os\nfrom cryptography.hazmat.primitives.ciphers.aead import AESGCM\n\nkey = AESGCM.generate_key(bit_length=256)\nc = AESGCM(key)\n\n# AAD is authenticated but NOT encrypted — visible on the wire, tamper-proof\nad = b\"sender=alice;recipient=bob;seq=42\"\n\nnonce = os.urandom(12)\nmsg = b\"session_token=abc123\"\n\n# Bind the AAD into the auth tag at encrypt time\nct = c.encrypt(nonce, msg, ad)\n\n# Receiver MUST pass the exact same AAD bytes or decrypt raises InvalidTag\npt = c.decrypt(nonce, ct, ad)\nprint(pt)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Encrypt with AAD",
+        "context": "Encrypt the plaintext \"msg\" under \"nonce\" while authenticating \"ad\" by calling \"c.encrypt\" with those three positional arguments in that order.",
+        "code_before": "import os\nfrom cryptography.hazmat.primitives.ciphers.aead import AESGCM\n\nkey = AESGCM.generate_key(bit_length=256)\nc = AESGCM(key)\nad = b\"sender=alice;seq=42\"\nnonce = os.urandom(12)\nmsg = b\"session_token=abc123\"\n\nct = ",
+        "code_after": "\nprint(len(ct))",
+        "correct_answer": "c.encrypt(nonce, msg, ad)"
+      },
+      {
+        "type": "concept",
+        "heading": "Nonce Reuse, the Career-Ender",
+        "body": "There is exactly one rule you cannot break: never reuse a nonce with the same key. Two messages encrypted under the same (key, nonce) pair XOR to reveal the XOR of their plaintexts, which is often enough to recover both. Worse, in GCM specifically, nonce reuse leaks the authentication subkey H, after which an attacker can forge any message they like under that key.\n\nPractical implications: do not generate nonces with a counter that resets after reboot. Do not derive nonces from message content. Do not let multiple threads share a counter without strict synchronization. Either use a 96-bit random nonce per message — collision probability is negligible at any sane volume — or use a deterministic counter that you are certain is monotonic across the entire lifetime of the key.\n\nIf you have any doubt about nonce uniqueness, look at AES-GCM-SIV or XChaCha20-Poly1305 — both tolerate nonce misuse better than vanilla GCM. And as always: rotate your keys. A single 256-bit AES key is good for about 2^32 messages before you should consider it tired."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Decrypt and verify",
+        "context": "Decrypt the ciphertext \"ct\" using \"nonce\" with \"ad\" as associated data by calling \"c.decrypt\" with the three positional arguments in that order.",
+        "code_before": "import os\nfrom cryptography.hazmat.primitives.ciphers.aead import AESGCM\n\nkey = AESGCM.generate_key(bit_length=256)\nc = AESGCM(key)\nad = b\"sender=alice;seq=42\"\nnonce = os.urandom(12)\nmsg = b\"session_token=abc123\"\nct = c.encrypt(nonce, msg, ad)\n\n# Recover the plaintext — fails loudly if anything was tampered\npt = ",
+        "code_after": "\nprint(pt)",
+        "correct_answer": "c.decrypt(nonce, ct, ad)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "A microservice you inherited encrypts every outbound message with AES-GCM using a 96-bit nonce derived from struct.pack('>Q', message_count), where message_count is read from a Redis counter. Redis goes down, the service restarts, and a fresh message_count of 0 is initialized from local config. The AES key in the env file is unchanged. What is the immediate cryptographic concern?",
+        "options": [
+          "Two or more messages will be encrypted under the same (key, nonce) pair, breaking confidentiality of both and leaking the GCM authentication subkey to anyone watching.",
+          "The 64-bit struct output is too small for a 96-bit nonce field.",
+          "GCM does not accept counter-derived nonces, only random ones.",
+          "Redis downtime invalidates the AES key, requiring a rotation."
+        ],
+        "correct": 0,
+        "hint": "The danger is not the nonce size or the counter type. It is what happens when the counter restarts and the key has not."
+      }
+    ]
+  },
+  "mod_lin_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Tree",
+        "body": "A Linux filesystem is a single tree starting at `/` — the root. Everything is somewhere under it. There is no C:\\ or D:\\; even external drives mount in as branches of the tree, usually under /mnt or /media. Your home directory hangs off /home, your user's stuff lives there, and configuration for the whole system sprawls across /etc, /usr, /var, /opt.\n\nWhen you sit at a shell, the shell is always 'standing' in some directory — your present working directory. Every command you type runs relative to that location unless you say otherwise. Half of being effective on Linux is being aware of where you are standing and being precise about where you point."
+      },
+      {
+        "type": "concept",
+        "heading": "Absolute vs Relative",
+        "body": "A path that starts with `/` is absolute — it describes a route from the root of the tree, valid no matter where you currently stand. `/etc/passwd` always points to the same file. A path that does not start with `/` is relative — it is resolved from your current directory. `scripts/run.sh` means 'the scripts folder right next to me, then run.sh inside it.'\n\nTwo special names appear everywhere. A single dot `.` is the current directory. Two dots `..` is the parent. So `../logs` means 'one level up, then into logs.' And the tilde `~` expands to your home directory, no matter where you are. `~/.ssh/id_rsa` always points to the same file for a given user.\n\nA few commands you will run thousands of times: `pwd` prints where you are. `ls` lists what is here. `cd` changes directory. Master those three and the filesystem opens up."
+      },
+      {
+        "type": "code",
+        "heading": "First steps",
+        "body": "The three commands you cannot do anything without. Run them in this order to get your bearings on any unfamiliar system.",
+        "code": "# Print Working Directory — where am I standing right now?\npwd                          # /home/you\n\n# List the contents of the current directory\nls                           # Names only, no fuss\n\n# Long format: permissions, owner, size, modification time\nls -l                        # Now with detail\n\n# Move into a subdirectory using a relative path\ncd Documents                 # Working directory is now ./Documents\n\n# Move up one level with the parent-directory shortcut\ncd ..                        # Back to the previous spot\n\n# Jump straight to your home directory from anywhere on the system\ncd ~                         # ~ expands to /home/you\n\n# cd with no argument is identical — same effect, jumps home\ncd                           # Identical to 'cd ~'"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Locate yourself",
+        "context": "Print the path of the current working directory by typing the \"pwd\" command on its own line.",
+        "code_before": "# You just SSH'd into a new server and want your bearings\n",
+        "code_after": "\n# Now list what is here\nls -l",
+        "correct_answer": "pwd"
+      },
+      {
+        "type": "code",
+        "heading": "Hidden files, absolute paths",
+        "body": "Once you can move around, you need to see the things ls hides by default and reach places that are not nearby. This is the next layer.",
+        "code": "# Hidden files begin with '.' — ls skips them unless told\nls -a                        # -a includes .bashrc, .ssh, .config, ...\n\n# Combine flags: long format AND hidden files. Classic recon listing.\nls -la                       # The two-second 'what is going on here'\n\n# Absolute paths start with / and ignore your current location\ncd /etc                      # Drops you in /etc regardless of starting point\n\n# Inspect a directory without moving into it\nls /var/log                  # Useful when you just want a peek\n\n# Tilde works inside any path, not just on its own\nls ~/.ssh                    # Look at your SSH config if it exists\n\n# Combine relative pieces with .. for sibling directories\nls ../scripts                # The 'scripts' folder one level up\n\n# cd - jumps back to your previous directory (handy flag)\ncd -                         # Toggle between two recent locations"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Reveal the hidden",
+        "context": "List every entry — including hidden ones — in long format by running \"ls\" with the combined \"-la\" flag.",
+        "code_before": "# Standing in a user's home directory, you want everything visible\n",
+        "code_after": "\n# Inspect the SSH directory if it showed up above\nls ~/.ssh",
+        "correct_answer": "ls -la"
+      },
+      {
+        "type": "concept",
+        "heading": "Sharp Edges",
+        "body": "Filenames with spaces will betray you. `cd My Documents` tries to cd into two arguments — `My` and `Documents` — and fails on both. Quote them: `cd \"My Documents\"` or escape the space: `cd My\\ Documents`. Same goes for filenames with parentheses, ampersands, or any shell metacharacter.\n\nThe parent shortcut `..` at the root level is still `/` — you cannot escape upward past root. Symbolic links can lie about the tree's shape: `cd` follows symlinks by default and `pwd` reports the symlink path, while `pwd -P` reports the real one. On a tangled filesystem the difference matters.\n\nFinally, two ergonomic habits. Tab completion is your reflex — half-type a name, hit Tab, let the shell finish it. You will type fewer wrong paths and discover filenames you forgot existed. And `cd` with no arguments goes home, every shell, every distro. Memorize the muscle: `cd <Enter>` is a panic button."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Jump to SSH config",
+        "context": "Change directory to the hidden \".ssh\" folder inside your home directory using the tilde shortcut, by running \"cd ~/.ssh\".",
+        "code_before": "# You need to inspect or edit your SSH config\n",
+        "code_after": "\n# Confirm where you landed\npwd\nls -la",
+        "correct_answer": "cd ~/.ssh"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You SSH into a server, run `pwd`, and see `/var/www/sites/blog`. You want to inspect the SSH authorized_keys file for the current user. Which command gets you there most reliably regardless of where you happen to be standing?",
+        "options": [
+          "cat ~/.ssh/authorized_keys",
+          "cat ./.ssh/authorized_keys",
+          "cat ../.ssh/authorized_keys",
+          "cat .ssh/authorized_keys"
+        ],
+        "correct": 0,
+        "hint": "Your current directory could be anywhere on the system. Which path notation does not care where you are standing?"
+      }
+    ]
+  }
+}

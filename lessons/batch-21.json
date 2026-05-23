@@ -1,0 +1,342 @@
+{
+  "mod_purp_2": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Rules Are Portable Detectors",
+        "body": "YARA and Sigma are the two lingua francas of detection engineering. YARA matches against files and memory — give it a rule and it tells you whether a binary, document, or memory dump contains the pattern you described. Sigma matches against log events — give it a rule and any SIEM that understands Sigma can evaluate whether an incoming event matches an adversary behavior.\n\nThe critical insight: writing a detection rule after an incident is forensics. Writing it before — based on ATT&CK technique analysis — is proactive hardening. Purple team operators write rules that model how a technique manifests, then verify those rules fire during simulation exercises. The gap between 'rule written' and 'rule verified to fire on real execution' is where most detection programs fail.\n\nYARA is to files what Sigma is to logs. A malware sample drops a file — YARA finds it. A technique executes and generates a Windows event — Sigma catches it. Both are plain text, version-controlled, and shareable. A well-maintained rule library is a force multiplier: one analyst's detection work protects every organization using the ruleset."
+      },
+      {
+        "type": "concept",
+        "heading": "YARA Rule Anatomy",
+        "body": "A YARA rule has three sections: meta (informational, not evaluated), strings (patterns to match), and condition (boolean logic combining the strings and other predicates). The strings section defines named patterns — byte sequences, text strings, or regular expressions. The condition section decides when a match fires.\n\nString modifiers change how patterns are matched: nocase makes a text match case-insensitive, wide matches UTF-16LE (common in Windows binaries where strings are stored as two bytes per character), ascii matches standard ASCII, fullword requires the string to be bounded by non-alphanumeric characters, xor applies a single-byte XOR across all 255 possible key values searching for the pattern under any key.\n\nConditions use the string names with a $ prefix, combined with boolean operators (and, or, not), cardinality operators (2 of ($str*) — at least two of a set must match), and predicates on the binary itself (filesize < 500KB, uint32(0) == 0x5A4D for the MZ magic bytes of a PE file). The power is in combining weak individual indicators into a high-confidence composite signature."
+      },
+      {
+        "type": "code",
+        "heading": "Writing a YARA Rule for Malware Detection",
+        "body": "This YARA rule targets a hypothetical dropper using a combination of PE file indicators, suspicious string patterns, and byte sequence matching — with every decision commented to explain the detection rationale.",
+        "code": "/*\n  YARA rule: Detect a PowerShell-dropping PE that performs AMSI bypass\n  Author: purple-team\n  ATT&CK: T1059.001 (PowerShell), T1562.001 (AMSI bypass)\n*/\n\nrule Dropper_AMSI_Bypass\n{\n    meta:\n        description = \"Detects PE files containing AMSI bypass string patterns\"\n        author      = \"purple-team@corp.local\"\n        date        = \"2024-01-15\"\n        severity    = \"high\"\n\n    strings:\n        // Classic AMSI bypass: patching amsi.dll's AmsiScanBuffer to return clean\n        $amsi_str1 = \"AmsiScanBuffer\" ascii wide nocase\n        $amsi_str2 = \"amsi.dll\"       ascii wide nocase\n\n        // PowerShell download cradle patterns\n        $ps_cradle1 = \"IEX (New-Object Net.WebClient)\" ascii nocase\n        $ps_cradle2 = \"DownloadString\"                 ascii wide nocase\n\n        // Suspicious byte patch sequences: xor eax,eax / ret seen in AMSI patches\n        $patch_bytes = { 31 C0 C3 }      // xor eax,eax; ret — classic bypass stub\n\n        // XOR-encoded variant: search all 255 XOR keys automatically\n        $encoded_amsi = \"AmsiScanBuffer\" xor\n\n    condition:\n        // Must be a PE file (MZ magic) AND contain AMSI indicators AND at least one cradle\n        uint16(0) == 0x5A4D              // MZ header at offset 0\n        and filesize < 5MB               // Reasonable dropper size cap\n        and (\n            ($amsi_str1 or $encoded_amsi) // Either plaintext or XOR-encoded AMSI reference\n            and $amsi_str2\n        )\n        and (1 of ($ps_cradle*) or $patch_bytes)  // Plus at least one execution indicator\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Add a nocase Wide String Pattern",
+        "context": "In a YARA strings section, declare a string variable named \"$ps_exec\" with the value \"powershell.exe\" that matches both ASCII and UTF-16LE (wide) and is case-insensitive. The modifiers must be \"ascii wide nocase\" after the string value. Type exactly: \"$ps_exec = \\\"powershell.exe\\\" ascii wide nocase\".",
+        "code_before": "strings:\n",
+        "code_after": "\ncondition:\n    $ps_exec",
+        "correct_answer": "    $ps_exec = \"powershell.exe\" ascii wide nocase"
+      },
+      {
+        "type": "code",
+        "heading": "Advanced YARA: Memory Scanning with Python",
+        "body": "YARA rules are useful in static analysis, but the real power is scanning live process memory for fileless malware. Here's how to load a YARA rule in Python and scan a file or memory buffer — the pattern used in EDR tooling and incident response scripts.",
+        "code": "import yara   # pip install yara-python\n\n# Compile a rule from a string (useful for dynamic rule generation)\nRULE_SOURCE = \"\"\"\nrule Suspicious_Shellcode {\n    meta:\n        description = \"Detects NOP sled followed by common shellcode patterns\"\n    strings:\n        $nop_sled    = { 90 90 90 90 90 90 90 90 }  // 8+ NOPs\n        $int3_break  = { CC }                        // INT3 breakpoint\n        $push_ret    = { 68 ?? ?? ?? ?? C3 }         // push addr; ret — common trampoline\n    condition:\n        $nop_sled and ($int3_break or $push_ret)\n}\n\"\"\"\n\n# Compile once — reuse the compiled object across many scans (expensive operation)\nrules = yara.compile(source=RULE_SOURCE)   # Can also compile from a file: yara.compile(filepath=...)\n\ndef scan_file(path: str) -> list[dict]:\n    \"\"\"Scan a file and return list of match dicts.\"\"\"\n    matches = rules.match(path)            # Returns list of yara.Match objects\n    return [{\"rule\": m.rule, \"tags\": m.tags, \"meta\": m.meta, \"strings\": str(m.strings)}\n            for m in matches]\n\ndef scan_buffer(data: bytes) -> list[dict]:\n    \"\"\"Scan an in-memory bytes buffer — for network payloads or process memory dumps.\"\"\"\n    matches = rules.match(data=data)       # Pass bytes directly\n    return [{\"rule\": m.rule, \"meta\": m.meta} for m in matches]\n\n# Test: scan a synthetic buffer containing a NOP sled and breakpoint\ntest_payload = b\"\\x90\" * 10 + b\"\\xcc\" + b\"\\x41\" * 50\nhits = scan_buffer(test_payload)\nfor hit in hits:\n    print(f\"[!] YARA match: {hit['rule']}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Scan a Buffer with YARA",
+        "context": "Given a compiled YARA rules object named \"rules\" and a bytes variable named \"buf\", call the \".match()\" method passing \"buf\" as the keyword argument \"data\" and assign the result to \"matches\". Type exactly: \"matches = rules.match(data=buf)\".",
+        "code_before": "# rules is a compiled yara.Rules object\nbuf = b\"\\x90\\x90\\xcc\"\n",
+        "code_after": "\nfor m in matches:\n    print(m.rule)",
+        "correct_answer": "matches = rules.match(data=buf)"
+      },
+      {
+        "type": "concept",
+        "heading": "Sigma Rules: Detection for Logs",
+        "body": "Sigma is YAML-based. A Sigma rule defines what a suspicious log event looks like — field names, values, and boolean logic — in a backend-agnostic way. A converter then translates it to your specific SIEM's query language: Splunk SPL, Elasticsearch KQL, Microsoft Sentinel KQL, QRadar AQL. One rule, every platform.\n\nEvery Sigma rule has: a title and description, a logsource block (what log category to search — windows/security, windows/sysmon, webserver, etc.), a detection block (the matching logic), and a falsepositives list. The detection block uses selection maps (field: value patterns) and keywords, combined with condition logic (selection and not filter, 1 of selection*).\n\nThe most common Sigma mistake is over-tuning for specificity at the cost of coverage. A rule that only matches one exact command line string will miss the same technique with different arguments. Prefer broader patterns with explicit false-positive filters. A rule that fires with 2% false positives and 98% true positives is far more valuable than one that fires with 0% false positives because it never fires at all. Detection is a recall-precision tradeoff, and most shops are hurt by low recall, not low precision."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Write a Sigma Detection Selection",
+        "context": "In a Sigma rule's detection block, write a selection entry that matches Windows Security Event logs where the EventID field equals 4769. Use YAML mapping syntax with key \"EventID\" and integer value 4769. Type exactly: \"EventID: 4769\".",
+        "code_before": "detection:\n    selection:\n",
+        "code_after": "\n    condition: selection",
+        "correct_answer": "        EventID: 4769"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Your YARA rule for detecting a PowerShell dropper includes the string $amsi = \"AmsiScanBuffer\" ascii nocase. During a purple team exercise, the simulated malware uses a single-byte XOR-encoded version of this string to evade static AV. The YARA rule does not fire. What is the minimal change to the rule that would detect both the plaintext and all single-byte XOR variants?\n\nA) Add a second string: $amsi_xor = \"AmsiScanBuffer\" base64\nB) Change the condition to use #amsi > 0 to count occurrences\nC) Add the xor modifier to the string: $amsi = \"AmsiScanBuffer\" ascii nocase xor\nD) Add a wildcard byte pattern: $amsi_wild = { 41 6D 73 ?? 53 63 61 6E }",
+        "options": [
+          "Add $amsi_xor = \"AmsiScanBuffer\" base64 as a second string",
+          "Change condition to use #amsi > 0 to count occurrences",
+          "Add the xor modifier: $amsi = \"AmsiScanBuffer\" ascii nocase xor",
+          "Add a wildcard byte pattern with ?? for the varying byte"
+        ],
+        "correct": 2,
+        "hint": "Recall the string modifier discussed in the second concept step that instructs YARA to automatically test all 255 possible single-byte XOR keys."
+      }
+    ]
+  },
+  "mod_purp_boss": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Full Purple Loop",
+        "body": "This is the capstone. You're building an Automated Breach Simulation (ABS) system in Python that closes the full purple team loop: load ATT&CK technique metadata, execute simulations, capture telemetry, evaluate YARA rules against any dropped files, query a SIEM API for expected Sigma rule alerts, and generate a structured gap report mapping every technique to its detection outcome.\n\nCommercial tools like AttackIQ, SafeBreach, and Cymulate do exactly this — and charge six figures annually for the privilege. You're building the open-source equivalent. The architecture is a pipeline: Plan → Execute → Collect → Evaluate → Report. Each stage is a Python module with clean interfaces. The final output is a JSON report and a human-readable HTML summary.\n\nThe key design principle: everything is data. Techniques are dicts. Results are dataclasses. The gap report is a list of dicts. Every stage reads and writes structured data. This makes the pipeline testable at each stage and means the report format is just a rendering problem, not a data problem."
+      },
+      {
+        "type": "concept",
+        "heading": "Architecture: Five Pipeline Stages",
+        "body": "Stage 1 — Plan: load the ATT&CK cache, filter techniques by platform and tactic, produce an ordered execution plan. The plan is a list of SimulationTask objects — technique ID, expected detections, cleanup function reference.\n\nStage 2 — Execute: run each SimulationTask, capture stdout, stderr, exit code, and duration in a SimulationResult. Write any artifacts (dropped files, registry keys) to a staging directory. Handle exceptions per-task without aborting the pipeline.\n\nStage 3 — Collect: after each execution, run YARA rules against the staging directory. Store YARA hit list in the SimulationResult.\n\nStage 4 — Evaluate: for each SimulationResult, query the SIEM API (or a stub) for alerts generated in the execution window. Compare alerts received against detections_expected. Compute: hit (expected alert fired), miss (expected alert did not fire), false positive (unexpected alert fired).\n\nStage 5 — Report: serialize all SimulationResults to JSON, compute summary statistics, render an HTML report. Write both to disk. Exit with a non-zero code if any detection gaps exist — this makes the ABS runnable as a CI/CD gate."
+      },
+      {
+        "type": "code",
+        "heading": "Core Data Model and Task Planner",
+        "body": "The foundational types and the planner that reads the ATT&CK cache, applies filters, and produces an ordered list of simulation tasks.",
+        "code": "import json\nimport time\nfrom dataclasses import dataclass, field\nfrom typing import Optional, Callable\n\n@dataclass\nclass SimulationTask:\n    technique_id:        str\n    name:                str\n    tactic:              str\n    platforms:           list[str]\n    detections_expected: list[str]       # Sigma rule IDs that should fire\n    simulate_fn:         Callable        # Function that performs the simulation\n    cleanup_fn:          Optional[Callable] = None  # Restore host state after execution\n\n@dataclass\nclass SimulationResult:\n    task:             SimulationTask\n    success:          bool\n    output:           str\n    duration_ms:      float\n    timestamp:        str\n    yara_hits:        list[str] = field(default_factory=list)  # YARA rules that fired\n    alerts_received:  list[str] = field(default_factory=list)  # SIEM alerts observed\n    detection_gaps:   list[str] = field(default_factory=list)  # Expected but not received\n\ndef load_attck_cache(path: str) -> dict:\n    with open(path) as f:\n        return json.load(f)              # Keyed by technique ID from module 1\n\ndef build_plan(cache: dict, platform: str, tactics: list[str], registry: dict) -> list[SimulationTask]:\n    \"\"\"Filter ATT&CK cache by platform/tactic and build a task list for registered techniques only.\"\"\"\n    tasks = []\n    for tid, meta in cache.items():\n        if tid not in registry:          # Skip techniques without a simulation function\n            continue\n        if platform not in meta.get(\"platforms\", []):\n            continue\n        if not any(t in meta.get(\"tactics\", []) for t in tactics):\n            continue\n        tasks.append(SimulationTask(\n            technique_id        = tid,\n            name                = meta[\"name\"],\n            tactic              = meta[\"tactics\"][0],\n            platforms           = meta[\"platforms\"],\n            detections_expected = registry[tid].get(\"detections\", []),\n            simulate_fn         = registry[tid][\"fn\"],\n            cleanup_fn          = registry[tid].get(\"cleanup\"),\n        ))\n    return tasks"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Check Technique is in Registry",
+        "context": "Inside the build_plan function's loop, write a conditional that skips the current iteration if the variable \"tid\" is NOT found as a key in the dict named \"registry\". Use a \"continue\" statement. Type exactly: \"if tid not in registry: continue\".",
+        "code_before": "for tid, meta in cache.items():\n",
+        "code_after": "\n    # proceed to build task",
+        "correct_answer": "    if tid not in registry: continue"
+      },
+      {
+        "type": "code",
+        "heading": "Executor, YARA Collector & SIEM Evaluator",
+        "body": "Stages 2, 3, and 4 of the pipeline: the executor runs each task and captures results, the collector scans for YARA hits, and the evaluator compares alerts received against detections expected to compute the gap list.",
+        "code": "import subprocess\nimport os\nimport yara\n\nSTAGING_DIR = \"/tmp/abs_staging\"         # Artifacts dropped here during simulation\n\ndef execute_task(task: SimulationTask) -> SimulationResult:\n    \"\"\"Run a simulation task, return a result. Never raises — exceptions become failures.\"\"\"\n    os.makedirs(STAGING_DIR, exist_ok=True)\n    start = time.time()\n    try:\n        output = task.simulate_fn()       # Call the registered simulation function\n        success = True\n    except Exception as e:\n        output  = f\"EXCEPTION: {e}\"\n        success = False\n    finally:\n        if task.cleanup_fn:               # Always run cleanup, success or not\n            try: task.cleanup_fn()\n            except Exception: pass        # Cleanup failures are non-fatal\n    return SimulationResult(\n        task        = task,\n        success     = success,\n        output      = str(output)[:2000], # Cap output at 2000 chars\n        duration_ms = (time.time() - start) * 1000,\n        timestamp   = time.strftime(\"%Y-%m-%dT%H:%M:%SZ\", time.gmtime()),\n    )\n\ndef collect_yara_hits(result: SimulationResult, rules: yara.Rules) -> None:\n    \"\"\"Scan staging directory for YARA hits; mutates result in-place.\"\"\"\n    for fname in os.listdir(STAGING_DIR):\n        fpath = os.path.join(STAGING_DIR, fname)\n        matches = rules.match(fpath)      # Scan each artifact\n        result.yara_hits.extend(m.rule for m in matches)\n\ndef evaluate_detections(result: SimulationResult, siem_alerts: list[str]) -> None:\n    \"\"\"Compare SIEM alerts against expected detections; populate gap list.\"\"\"\n    result.alerts_received = siem_alerts\n    result.detection_gaps  = [\n        rule for rule in result.task.detections_expected\n        if rule not in siem_alerts        # Expected but not observed = gap\n    ]"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Compute Detection Gaps",
+        "context": "Build the detection_gaps list using a list comprehension. Iterate over \"result.task.detections_expected\", keeping only rules that are NOT in \"siem_alerts\". Assign to \"result.detection_gaps\". Type exactly: \"result.detection_gaps = [r for r in result.task.detections_expected if r not in siem_alerts]\".",
+        "code_before": "def evaluate_detections(result, siem_alerts):\n    result.alerts_received = siem_alerts\n",
+        "code_after": "",
+        "correct_answer": "    result.detection_gaps = [r for r in result.task.detections_expected if r not in siem_alerts]"
+      },
+      {
+        "type": "concept",
+        "heading": "Report Generation & CI Integration",
+        "body": "The report is the product. Everything else is machinery. A good ABS report answers three questions: what ran, what was detected, and where are the gaps that need fixing? Structure the JSON report with a header (timestamp, operator, platform, techniques run, summary counts) and a results array where each entry contains the full SimulationResult plus computed fields: detection_coverage_pct, gap_count, yara_hits_count.\n\nThe HTML report is for humans: a table with one row per technique, color-coded by detection outcome — green for full coverage, yellow for partial (some detections fired), red for full gap. Include the technique ID, name, tactic, execution success, and gap list. A red row is an action item. The table is sortable by gap count so the worst coverage floats to the top.\n\nCI integration: sys.exit(1) if any SimulationResult has a non-empty detection_gaps list. This makes the ABS runnable as a scheduled GitHub Actions workflow against a test environment. A failed pipeline means a new detection gap was introduced — either a technique was added to the plan without a corresponding detection rule, or an existing rule stopped firing after a SIEM configuration change. You've just built continuous detection validation."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Exit Non-Zero on Detection Gaps",
+        "context": "After generating the report, check if any SimulationResult in a list named \"results\" has a non-empty \"detection_gaps\" field. If so, call \"sys.exit(1)\". Write the full conditional using \"any()\". Type exactly: \"if any(r.detection_gaps for r in results): sys.exit(1)\".",
+        "code_before": "import sys\n# results is a list of SimulationResult objects\n",
+        "code_after": "\nprint(\"[+] All detections verified.\")",
+        "correct_answer": "if any(r.detection_gaps for r in results): sys.exit(1)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Your ABS pipeline runs T1059.001 (PowerShell) on a Windows test host. The execution succeeds. Your SIEM query for the execution window returns the alert 'proc_creation_powershell_encoded_cmd' but your detections_expected list for T1059.001 contains only 'powershell_suspicious_args'. The evaluate_detections function marks 'powershell_suspicious_args' as a gap. What is the correct interpretation of this result?\n\nA) The SIEM has a false positive — 'proc_creation_powershell_encoded_cmd' should be suppressed\nB) A gap exists for 'powershell_suspicious_args' AND an unexpected rule fired — update detections_expected to include the firing rule after verifying it is a true positive\nC) The gap report is wrong — any alert firing means the technique is covered, regardless of which rule\nD) The simulation function is broken — a mismatch in expected rules means the technique did not execute correctly",
+        "options": [
+          "The SIEM has a false positive — suppress the unexpected alert",
+          "Gap confirmed for one rule, unexpected rule fired — verify and update detections_expected if it is a true positive",
+          "Any alert firing means full coverage — no gap exists",
+          "Rule mismatch means the simulation function did not execute correctly"
+        ],
+        "correct": 1,
+        "hint": "Trace the evaluate_detections logic: it computes gaps from detections_expected, not from alerts_received. Think about what an unexpected alert in alerts_received tells you about your expected detection list."
+      }
+    ]
+  },
+  "mod_rgo_3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Packets From Scratch",
+        "body": "Every network communication is bytes laid out in a specific order that both ends agree on. TCP, UDP, ICMP, IP — each protocol header is a precisely defined binary structure: field X starts at byte offset N, is Y bytes wide, and carries semantic Z. When you use a raw socket, the OS gives you direct access to that byte stream without interpretation. You build the header yourself. You control every bit.\n\nWhy does this matter? Legitimate network tools — nmap, hping3, Scapy — all use raw sockets under the hood. Writing your own packet crafter in Go means you understand exactly what those tools are doing, can extend them, and can detect when adversaries abuse them. A SYN flood, an ICMP tunnel, a fragmented IP evasion — all of these are raw socket operations.\n\nGo's standard library gives you net.Dial for high-level TCP/UDP, but raw packet crafting requires syscall.Socket with SOCK_RAW. On Linux, this needs CAP_NET_RAW privilege (or root). On Windows, raw socket send is restricted. Know your target platform before building the tool."
+      },
+      {
+        "type": "concept",
+        "heading": "Binary Protocol Layout in Go",
+        "body": "Go's encoding/binary package serializes structs to byte streams in big-endian or little-endian byte order. Network protocols use big-endian (most significant byte first) — this is called network byte order. When you lay out an IP or TCP header struct in Go, every multi-byte integer field must be written in big-endian order when encoding to wire format.\n\nThe unsafe.Sizeof and encoding/binary.Size functions tell you the byte size of a struct — useful for computing offsets and setting length fields in headers. Go structs have no padding guarantees unless you use binary.Write directly; if you're manually slicing a byte buffer, track offsets manually.\n\nChecksums are mandatory for IP and TCP. The checksum algorithm is the 16-bit one's complement sum of all 16-bit words in the header. A packet with a bad checksum is silently dropped by every network stack on the path. Writing a correct checksum function is not optional — it's the first bug you will encounter when your crafted packet disappears without a trace."
+      },
+      {
+        "type": "code",
+        "heading": "ICMP Echo Request from Raw Bytes",
+        "body": "This Go program constructs a raw ICMP echo request packet by hand, computes the checksum, sends it via a raw socket, and reads the reply — the building block of a custom ping implementation.",
+        "code": "package main\n\nimport (\n\t\"encoding/binary\"\n\t\"fmt\"\n\t\"net\"\n\t\"os\"\n\t\"time\"\n)\n\n// icmpHeader represents an ICMP header: Type(1) Code(1) Checksum(2) ID(2) Seq(2)\ntype icmpHeader struct {\n\tType     uint8\n\tCode     uint8\n\tChecksum uint16\n\tID       uint16\n\tSeq      uint16\n}\n\n// checksum computes the 16-bit one's complement sum over a byte slice\nfunc checksum(data []byte) uint16 {\n\tvar sum uint32\n\tfor i := 0; i+1 < len(data); i += 2 {\n\t\tsum += uint32(binary.BigEndian.Uint16(data[i : i+2]))\n\t}\n\tif len(data)%2 != 0 {               // Odd byte: pad with zero\n\t\tsum += uint32(data[len(data)-1]) << 8\n\t}\n\tfor sum>>16 != 0 {                  // Fold 32-bit sum to 16 bits\n\t\tsum = (sum & 0xFFFF) + (sum >> 16)\n\t}\n\treturn ^uint16(sum)                 // One's complement\n}\n\nfunc buildICMPEcho(id, seq uint16) []byte {\n\tpkt := make([]byte, 8)              // ICMP header is 8 bytes\n\tpkt[0] = 8                         // Type 8 = Echo Request\n\tpkt[1] = 0                         // Code 0\n\tbinary.BigEndian.PutUint16(pkt[4:], id)\n\tbinary.BigEndian.PutUint16(pkt[6:], seq)\n\t// Checksum field starts at zero — compute over the full header\n\tcsum := checksum(pkt)\n\tbinary.BigEndian.PutUint16(pkt[2:], csum) // Write computed checksum at offset 2\n\treturn pkt\n}\n\nfunc main() {\n\tconn, err := net.Dial(\"ip4:icmp\", \"8.8.8.8\") // Raw ICMP socket — needs CAP_NET_RAW\n\tif err != nil {\n\t\tfmt.Fprintf(os.Stderr, \"[-] %v (run as root or with CAP_NET_RAW)\\n\", err)\n\t\tos.Exit(1)\n\t}\n\tdefer conn.Close()\n\tconn.SetDeadline(time.Now().Add(3 * time.Second))\n\tpkt := buildICMPEcho(0x1337, 1)     // ID=0x1337, Sequence=1\n\tconn.Write(pkt)\n\trbuf := make([]byte, 64)\n\tn, _ := conn.Read(rbuf)\n\tfmt.Printf(\"[+] Reply: %d bytes — type=%d\\n\", n, rbuf[0])\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Write Checksum Into Packet Buffer",
+        "context": "After computing a checksum stored in the variable \"csum\" of type uint16, write it into a packet buffer named \"pkt\" starting at byte offset 2 using big-endian byte order. Use \"binary.BigEndian.PutUint16\". Type exactly: \"binary.BigEndian.PutUint16(pkt[2:], csum)\".",
+        "code_before": "pkt := make([]byte, 8)\npkt[0] = 8\npkt[1] = 0\ncsum := checksum(pkt)\n",
+        "code_after": "\nfmt.Printf(\"checksum written: %04x\\n\", csum)",
+        "correct_answer": "binary.BigEndian.PutUint16(pkt[2:], csum)"
+      },
+      {
+        "type": "code",
+        "heading": "TCP SYN Packet Crafter",
+        "body": "A raw TCP SYN packet requires both an IP header and a TCP header, plus a pseudo-header for checksum computation. This builds the full packet, computes the TCP checksum correctly using the pseudo-header, and sends it via a raw IP socket.",
+        "code": "package main\n\nimport (\n\t\"encoding/binary\"\n\t\"fmt\"\n\t\"net\"\n)\n\n// buildTCPSYN crafts a raw TCP SYN packet for the given src/dst IP and ports\nfunc buildTCPSYN(srcIP, dstIP net.IP, srcPort, dstPort uint16) []byte {\n\t// TCP header: 20 bytes minimum (no options)\n\ttcp := make([]byte, 20)\n\tbinary.BigEndian.PutUint16(tcp[0:], srcPort)   // Source port\n\tbinary.BigEndian.PutUint16(tcp[2:], dstPort)   // Destination port\n\tbinary.BigEndian.PutUint32(tcp[4:], 0xDEADBEEF) // Sequence number (random in real use)\n\tbinary.BigEndian.PutUint32(tcp[8:], 0)          // Acknowledgment number (0 for SYN)\n\ttcp[12] = 0x50                                  // Data offset: 5 * 4 = 20 bytes header\n\ttcp[13] = 0x02                                  // Flags: SYN bit set (bit 1)\n\tbinary.BigEndian.PutUint16(tcp[14:], 65535)     // Window size\n\n\t// TCP checksum requires a pseudo-header: srcIP(4) dstIP(4) zeros(1) proto(1) tcpLen(2)\n\tpseudo := make([]byte, 12+len(tcp))\n\tcopy(pseudo[0:4], srcIP.To4())                  // Source IP\n\tcopy(pseudo[4:8], dstIP.To4())                  // Destination IP\n\tpseudo[8] = 0                                   // Reserved zero byte\n\tpseudo[9] = 6                                   // Protocol: TCP = 6\n\tbinary.BigEndian.PutUint16(pseudo[10:], uint16(len(tcp))) // TCP segment length\n\tcopy(pseudo[12:], tcp)                          // Append TCP header to pseudo-header\n\n\tcsum := checksum(pseudo)                        // Compute over pseudo + TCP\n\tbinary.BigEndian.PutUint16(tcp[16:], csum)      // Write checksum at TCP offset 16\n\treturn tcp\n}\n\nfunc main() {\n\tsrc := net.ParseIP(\"192.168.1.10\")\n\tdst := net.ParseIP(\"10.0.0.1\")\n\tpkt := buildTCPSYN(src, dst, 54321, 80)          // Craft SYN from :54321 to :80\n\tfmt.Printf(\"[+] SYN packet: %d bytes, flags byte: %08b\\n\", len(pkt), pkt[13])\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Set the TCP SYN Flag Byte",
+        "context": "In a TCP header byte slice named \"tcp\", set the flags byte at offset 13 to the value that sets only the SYN bit. In TCP, SYN is bit 1 (value 0x02). Assign the byte literal \"0x02\" to \"tcp[13]\". Type exactly: \"tcp[13] = 0x02\".",
+        "code_before": "tcp := make([]byte, 20)\nbinary.BigEndian.PutUint16(tcp[0:], 54321)\nbinary.BigEndian.PutUint16(tcp[2:], 80)\ntcp[12] = 0x50  // data offset\n",
+        "code_after": "\nfmt.Printf(\"flags: %08b\\n\", tcp[13])  // 00000010",
+        "correct_answer": "tcp[13] = 0x02"
+      },
+      {
+        "type": "concept",
+        "heading": "Privilege, Detection & Evasion",
+        "body": "Raw socket access is a privilege escalation indicator. On Linux, any process opening SOCK_RAW generates no log by default — but an EDR watching syscall activity (specifically socket() and sendto() with AF_INET + SOCK_RAW) will flag it. Your own packet crafter is detectable by the same mechanisms that detect attacker tooling. Design accordingly.\n\nChecksum errors are louder than you think. Every network device on the path validates checksums. A router silently drops a bad-checksum packet. Your raw socket program gets no error — the packet just vanishes. The debugging loop for checksum bugs is: Wireshark on the sending interface (not the destination), look for 'TCP checksum incorrect' in the packet details. If Wireshark shows the packet but the target never responds, the checksum is almost certainly wrong.\n\nIP fragmentation is the classic IDS evasion vector. Split a payload across multiple IP fragments with overlapping offsets — some IDS engines reassemble incorrectly and miss the payload. Modern enterprise NGFWs reassemble before inspection, making this ineffective, but legacy environments remain vulnerable. Implementing fragment reassembly in your own tools — rather than relying on the OS — is the correct approach when writing a protocol fuzzer or custom scanner."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Build the TCP Pseudo-Header",
+        "context": "Allocate a byte slice named \"pseudo\" for a TCP checksum pseudo-header with length equal to 12 plus the length of a TCP header slice named \"tcp\". Use \"make([]byte, ...)\". Type exactly: \"pseudo := make([]byte, 12+len(tcp))\".",
+        "code_before": "// Construct pseudo-header for TCP checksum computation\ntcp := make([]byte, 20)\n",
+        "code_after": "\ncopy(pseudo[0:4], srcIP.To4())\ncopy(pseudo[4:8], dstIP.To4())",
+        "correct_answer": "pseudo := make([]byte, 12+len(tcp))"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You craft a raw TCP SYN packet in Go, send it via net.Dial(\"ip4:tcp\", ...), and Wireshark shows the packet leaving the interface. The target host never responds. Wireshark shows 'TCP checksum incorrect' on the outgoing packet. What is the most likely root cause?\n\nA) The target host's firewall is silently dropping the SYN\nB) The TCP checksum was computed over the TCP header alone, missing the required pseudo-header fields\nC) The SYN flag byte is incorrect — bit 0 should be set, not bit 1\nD) net.Dial does not support raw TCP packets — you must use syscall.Socket directly",
+        "options": [
+          "The target firewall is silently dropping the SYN",
+          "The checksum was computed over TCP header only, without the required pseudo-header",
+          "SYN flag is wrong — bit 0 should be set instead of bit 1",
+          "net.Dial does not support raw TCP — use syscall.Socket"
+        ],
+        "correct": 1,
+        "hint": "Recall the pseudo-header section from the code step — TCP checksum is not computed over the TCP header alone, and omitting a required component produces exactly the symptom described."
+      }
+    ]
+  },
+  "mod_rgo_boss": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Ransomware Simulation, Not Ransomware",
+        "body": "A ransomware simulator models the observable behaviors of ransomware without causing actual data loss: it enumerates files, reads them, optionally writes XOR-'encrypted' copies to a staging directory, generates a ransom note, and exercises the C2 check-in behavior. The simulation is used by red teams to test endpoint detection, and by blue teams to verify that their backup and recovery procedures work before an actual incident.\n\nThe behaviors that EDR and behavioral analytics care about: rapid file enumeration across multiple directories, high-volume file reads followed by writes with different extensions, shadow copy deletion (vssadmin delete shadows — T1490), and network connections to unknown hosts after encryption. These behavioral fingerprints, not the encryption algorithm itself, are what modern defenses detect.\n\nThis module builds a concurrent Go binary that models all of these behaviors in a controlled, reversible way. Every file write goes to a staging directory. No originals are modified. An audit log records every action so blue teams can validate their detections against ground truth."
+      },
+      {
+        "type": "concept",
+        "heading": "Go Concurrency Model for File Ops",
+        "body": "Real ransomware encrypts files concurrently to maximize throughput before detection and response. A single-threaded encryptor on a host with 100,000 files takes minutes — long enough for an EDR to detect, quarantine, and stop it. Multi-threaded encryptors finish in seconds. Your simulation models this concurrency to generate realistic telemetry.\n\nThe Go pattern: a worker pool. A fixed number of goroutines (workers) pull file paths from a channel. The main goroutine walks the directory tree, sending paths to the channel. Workers process each path, send results to a results channel. A collector goroutine drains the results channel and writes the audit log. The WaitGroup coordinates shutdown: all workers call wg.Done() when the work channel closes, the main goroutine calls wg.Wait() before processing results.\n\nRate limiting is a realistic detail that also makes the simulation safer: a time.Ticker fires every N milliseconds, and workers only process a file when they receive a tick. This controls the operation rate and prevents the simulation from saturating disk I/O on a production-adjacent system."
+      },
+      {
+        "type": "code",
+        "heading": "File Walker and Worker Pool",
+        "body": "The core engine: a directory walker that feeds file paths to a buffered channel, and a worker pool that reads from it concurrently — the architecture that drives all subsequent simulation stages.",
+        "code": "package main\n\nimport (\n\t\"fmt\"\n\t\"io/fs\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"sync\"\n\t\"time\"\n)\n\n// FileJob represents one file to process\ntype FileJob struct {\n\tPath string\n\tSize int64\n}\n\n// AuditEntry records what the simulator did to one file\ntype AuditEntry struct {\n\tPath      string\n\tAction    string    // \"read\", \"staged\", \"skipped\"\n\tDuration  time.Duration\n\tTimestamp time.Time\n}\n\n// walkFiles sends all regular files under root to the jobs channel\nfunc walkFiles(root string, jobs chan<- FileJob) {\n\tdefer close(jobs)                          // Signal workers that enumeration is done\n\tfilepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {\n\t\tif err != nil || d.IsDir() {\n\t\t\treturn nil                         // Skip errors and directories silently\n\t\t}\n\t\tinfo, err := d.Info()\n\t\tif err != nil {\n\t\t\treturn nil\n\t\t}\n\t\tjobs <- FileJob{Path: path, Size: info.Size()} // Send job to worker pool\n\t\treturn nil\n\t})\n}\n\n// worker processes FileJobs from the jobs channel and sends AuditEntrys to results\nfunc worker(id int, jobs <-chan FileJob, results chan<- AuditEntry, wg *sync.WaitGroup) {\n\tdefer wg.Done()                            // Always signal completion\n\tfor job := range jobs {                    // Range over channel — exits when channel closes\n\t\tstart := time.Now()\n\t\t_, err := os.ReadFile(job.Path)        // Read file — generate file-access telemetry\n\t\taction := \"read\"\n\t\tif err != nil {\n\t\t\taction = \"skipped\"\n\t\t}\n\t\tresults <- AuditEntry{\n\t\t\tPath:      job.Path,\n\t\t\tAction:    action,\n\t\t\tDuration:  time.Since(start),\n\t\t\tTimestamp: time.Now(),\n\t\t}\n\t}\n}\n\nfunc runPool(root string, workerCount int) []AuditEntry {\n\tjobs    := make(chan FileJob, 100)          // Buffered: walker can run ahead of workers\n\tresults := make(chan AuditEntry, 100)\n\tvar wg sync.WaitGroup\n\tfor i := 0; i < workerCount; i++ {         // Launch fixed pool of workers\n\t\twg.Add(1)\n\t\tgo worker(i, jobs, results, &wg)\n\t}\n\tgo walkFiles(root, jobs)                   // Walker in its own goroutine\n\tgo func() { wg.Wait(); close(results) }()  // Close results when all workers done\n\tvar audit []AuditEntry\n\tfor entry := range results {\n\t\taudit = append(audit, entry)\n\t}\n\treturn audit\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Close the Jobs Channel After Walk",
+        "context": "At the start of the walkFiles function, use a \"defer\" statement to close the channel named \"jobs\" when the function returns. This signals workers that no more jobs will arrive. Type exactly: \"defer close(jobs)\".",
+        "code_before": "func walkFiles(root string, jobs chan<- FileJob) {\n",
+        "code_after": "\n    filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {\n        return nil\n    })\n}",
+        "correct_answer": "\tdefer close(jobs)"
+      },
+      {
+        "type": "code",
+        "heading": "XOR Staging, C2 Beacon & Ransom Note",
+        "body": "The behavioral simulation stages: XOR-cipher file contents to staging, perform a C2 beacon HTTP POST, and drop a ransom note — all instrumented for detection validation.",
+        "code": "package main\n\nimport (\n\t\"bytes\"\n\t\"fmt\"\n\t\"net/http\"\n\t\"os\"\n\t\"path/filepath\"\n\t\"time\"\n)\n\nconst (\n\tStagingDir  = \"/tmp/abs_ransim_staging\"\n\tXORKey      = byte(0xAB)                // Single-byte XOR key — weak, but detectable\n\tC2URL       = \"http://127.0.0.1:9999/beacon\" // Loopback C2 — won't exfil real data\n\tNoteContent = \"Your files have been encrypted. This is a simulation. No data was harmed.\"\n)\n\n// xorBytes applies a single-byte XOR cipher over a byte slice\nfunc xorBytes(data []byte, key byte) []byte {\n\tout := make([]byte, len(data))\n\tfor i, b := range data {\n\t\tout[i] = b ^ key               // XOR every byte with the key\n\t}\n\treturn out\n}\n\n// stageFile reads src, XOR-encodes it, writes to staging dir with .enc extension\nfunc stageFile(src string) error {\n\tdata, err := os.ReadFile(src)       // Read original file\n\tif err != nil {\n\t\treturn err\n\t}\n\tencoded   := xorBytes(data, XORKey) // Simulate encryption\n\tdestName  := filepath.Base(src) + \".enc\"\n\tdestPath  := filepath.Join(StagingDir, destName)\n\tos.MkdirAll(StagingDir, 0700)\n\treturn os.WriteFile(destPath, encoded, 0600) // Write encoded file to staging\n}\n\n// beaconC2 sends a simulated check-in POST to the loopback C2 listener\nfunc beaconC2(victimID string) error {\n\tbody    := []byte(fmt.Sprintf(`{\"id\":\"%s\",\"ts\":\"%s\"}`, victimID, time.Now().UTC().Format(time.RFC3339)))\n\tresp, err := http.Post(C2URL, \"application/json\", bytes.NewReader(body))\n\tif err != nil {\n\t\treturn fmt.Errorf(\"c2 beacon failed: %w\", err) // Wrap error with context\n\t}\n\tdefer resp.Body.Close()\n\tfmt.Printf(\"[*] C2 beacon: HTTP %d\\n\", resp.StatusCode)\n\treturn nil\n}\n\n// dropRansomNote writes the ransom note to the target directory\nfunc dropRansomNote(dir string) error {\n\tnote := filepath.Join(dir, \"RANSOM_NOTE.txt\")\n\treturn os.WriteFile(note, []byte(NoteContent), 0644)\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "XOR Every Byte in a Slice",
+        "context": "Inside the xorBytes function, in a for loop that unpacks index \"i\" and value \"b\" from \"data\", assign the XOR of \"b\" and \"key\" to \"out[i]\". Type exactly: \"out[i] = b ^ key\".",
+        "code_before": "func xorBytes(data []byte, key byte) []byte {\n\tout := make([]byte, len(data))\n\tfor i, b := range data {\n",
+        "code_after": "\n\t}\n\treturn out\n}",
+        "correct_answer": "\t\tout[i] = b ^ key"
+      },
+      {
+        "type": "concept",
+        "heading": "Cleanup, Safety Rails & EDR Telemetry",
+        "body": "A ransomware simulator without a cleanup stage is a liability. After the simulation run completes, the engine must delete the staging directory and the ransom note, restore any system state it modified, and emit an audit log of everything it did. os.RemoveAll(StagingDir) handles the staged files. Any registry or scheduled task modifications need their own explicit reversal. The cleanup function should be deferred at the start of main() so it runs even if the simulation panics.\n\nSafety rails: never run against a path that contains real data unless you've verified the staging-only mode is enforced. Add a --dry-run flag that walks files and logs what would have been processed but performs no reads, writes, or network calls. Add a --max-files limit. Add an explicit exclusion list for paths like /, /etc, /boot, /home. The simulator should refuse to run if the target directory looks like a system path.\n\nEDR telemetry to validate: process creation events for the simulator binary, file-access events for the walk phase (4663 on Windows, audit log on Linux), file-write events for the staging phase, and the network connection event for the C2 beacon. Your blue team should have a detection for each of these. If any are missing, you've found a gap before an adversary does."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Defer Staging Directory Cleanup",
+        "context": "At the start of the main function, use a \"defer\" statement with an anonymous function that calls \"os.RemoveAll\" on the constant \"StagingDir\" and prints a cleanup message. Type exactly: \"defer func() { os.RemoveAll(StagingDir); fmt.Println(\\\"[+] Staging cleaned up\\\") }()\".",
+        "code_before": "func main() {\n",
+        "code_after": "\n\t// simulation logic follows\n}",
+        "correct_answer": "\tdefer func() { os.RemoveAll(StagingDir); fmt.Println(\"[+] Staging cleaned up\") }()"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Your ransomware simulator runs a worker pool of 16 goroutines against a test directory. The walkFiles goroutine sends FileJob values to a buffered channel of size 100, then closes the channel. One of the 16 workers panics on a corrupt file. The deferred wg.Done() in the worker function runs, but the results channel is never closed because the WaitGroup counter reaches zero only after all workers exit. Your main goroutine is blocked on range results waiting for the close. What Go pattern prevents this deadlock?\n\nA) Increase the results channel buffer size to 10000 so it never blocks\nB) Use a separate goroutine that calls wg.Wait() then closes results, as shown in the runPool function\nC) Replace the WaitGroup with a context.WithCancel and cancel on first worker panic\nD) Use sync.Mutex to protect the results channel write and check for closure before each send",
+        "options": [
+          "Increase results channel buffer to 10000 so it never blocks",
+          "Use a separate goroutine calling wg.Wait() then close(results), as shown in runPool",
+          "Replace WaitGroup with context.WithCancel and cancel on first panic",
+          "Use sync.Mutex to protect channel writes and check for closure before each send"
+        ],
+        "correct": 1,
+        "hint": "Look at the runPool function in the code step — specifically the goroutine launched after the worker pool, and what it does after wg.Wait() returns."
+      }
+    ]
+  },
+  "mod_rrn_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "Safe by Default, Unsafe by Choice",
+        "body": "Rust's central promise is memory safety without garbage collection. The ownership system — at compile time — guarantees that every piece of memory has exactly one owner, is freed exactly once, and is never accessed after it's freed. Buffer overflows, use-after-free, double-free, and null pointer dereferences are impossible in safe Rust. The compiler rejects code that would cause them.\n\nBut sometimes you need to do things the compiler can't verify as safe: dereference a raw pointer, call a C library function, access hardware registers directly, or implement a data structure whose invariants you maintain manually (like a doubly-linked list). For these, Rust has the unsafe keyword. An unsafe block is a promise to the compiler: 'I have verified this is correct — trust me here and nowhere else.'\n\nFor security tooling, unsafe blocks appear in: FFI calls to system APIs (calling Windows CreateRemoteThread from Rust), shellcode injection (casting an integer to a function pointer and calling it), and parsing binary protocols with raw memory access. Understanding exactly what unsafe enables — and what it doesn't — is the difference between writing a tool and writing a vulnerability."
+      },
+      {
+        "type": "concept",
+        "heading": "What unsafe Actually Unlocks",
+        "body": "The unsafe keyword in Rust enables exactly five additional capabilities, and only five: dereferencing raw pointers (*const T and *mut T), calling unsafe functions or methods, accessing or modifying a mutable static variable, implementing an unsafe trait, and accessing fields of unions.\n\nCritically, unsafe does NOT suspend the borrow checker, type system, or lifetime rules for regular references. An unsafe block with a regular &mut reference still obeys all Rust ownership rules. The only thing unsafe does is allow raw pointers and unsafe function calls. This is a much smaller surface than most people assume.\n\nRaw pointers (*const T, *mut T) are like C pointers: they can be null, they can dangle, they don't have lifetimes, and they can alias freely. Creating a raw pointer is safe — you can write let p = &x as *const i32 in safe code. Dereferencing a raw pointer (*p) is unsafe because Rust can't verify the pointer is valid. This asymmetry — safe to create, unsafe to dereference — is why raw pointer bugs in Rust are contained to unsafe blocks, unlike C where every pointer access is implicitly unsafe."
+      },
+      {
+        "type": "code",
+        "heading": "Raw Pointers and Unsafe Dereference",
+        "body": "This Rust program demonstrates creating raw pointers from references, dereferencing them in an unsafe block, pointer arithmetic, and the unsafe function pattern — the foundational mechanics of Rust's unsafe model.",
+        "code": "fn main() {\n    // Creating raw pointers from references — this part is SAFE\n    let x: i32 = 0x41424344;                        // A value on the stack\n    let safe_ref: &i32 = &x;                        // Normal reference — borrow checked\n    let raw_const: *const i32 = safe_ref as *const i32;  // Cast to raw const pointer — safe\n    let raw_mut: *mut i32 = &x as *const i32 as *mut i32; // Cast to raw mut pointer — safe to create\n\n    // Dereferencing raw pointers — REQUIRES unsafe block\n    unsafe {\n        println!(\"raw_const dereference: 0x{:08X}\", *raw_const);  // Read the value\n        // *raw_mut = 0xDEADBEEF;  // Would write through raw_mut — undefined behavior here\n        //                          // (modifying via *mut while a &i32 exists is UB)\n    }\n\n    // Pointer arithmetic — indexing manually through a buffer\n    let buf: [u8; 8] = [0x41, 0x42, 0x43, 0x44, 0x90, 0x90, 0xCC, 0x00];\n    let base_ptr: *const u8 = buf.as_ptr();          // Pointer to first byte\n    unsafe {\n        for i in 0..buf.len() {\n            let byte_ptr = base_ptr.add(i);          // .add() is pointer arithmetic — unsafe\n            print!(\"0x{:02X} \", *byte_ptr);         // Dereference each byte\n        }\n        println!();\n    }\n}\n\n// Marking a function unsafe: callers must use unsafe block to call it\n// This documents that the caller is responsible for upholding safety invariants\nunsafe fn write_byte(ptr: *mut u8, value: u8) {\n    *ptr = value;                                    // Direct pointer write — only callable from unsafe\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Dereference a Raw Pointer",
+        "context": "Inside an unsafe block, dereference a raw pointer named \"raw_ptr\" of type \"*const i32\" and assign the value to a new variable named \"val\" using let. Type exactly: \"let val = *raw_ptr;\".",
+        "code_before": "let x: i32 = 42;\nlet raw_ptr: *const i32 = &x as *const i32;\nunsafe {\n",
+        "code_after": "\n    println!(\"{}\", val);\n}",
+        "correct_answer": "    let val = *raw_ptr;"
+      },
+      {
+        "type": "code",
+        "heading": "FFI: Calling C from Rust",
+        "body": "Foreign Function Interface (FFI) calls are the most common reason for unsafe in real security tooling — calling Windows APIs, Linux syscalls, or C libraries. Here's the pattern for declaring and calling an external C function from Rust.",
+        "code": "// Declare an external C function interface using extern \"C\"\n// The linker resolves these at link time — they must exist in a linked library\nextern \"C\" {\n    // getpid() from libc — returns current process ID as a C int\n    fn getpid() -> i32;\n\n    // strlen from libc — takes a C string pointer, returns length\n    fn strlen(s: *const u8) -> usize;\n}\n\nfn get_process_id() -> i32 {\n    unsafe {\n        getpid()    // Calling extern fn is always unsafe — Rust can't verify C's behavior\n    }\n}\n\nfn main() {\n    let pid = get_process_id();         // Safe wrapper around unsafe FFI call\n    println!(\"[*] PID: {}\", pid);\n\n    // Calling strlen directly on a null-terminated byte slice\n    let c_string: &[u8] = b\"hello\\x00\"; // Null-terminated C string as a Rust byte slice\n    let len = unsafe {\n        strlen(c_string.as_ptr())        // as_ptr() gives *const u8 — what C expects\n    };\n    println!(\"[*] strlen: {}\", len);    // 5 — does not count the null terminator\n\n    // Pattern: wrap every unsafe FFI call in a safe function with validated inputs\n    // The unsafe block should be as small as possible — just the FFI call itself\n    // All argument validation happens in safe code before entering the unsafe block\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Declare an Extern C Function",
+        "context": "In a Rust extern \"C\" block, declare an external C function named \"getpid\" that takes no arguments and returns \"i32\". Type exactly: \"fn getpid() -> i32;\".",
+        "code_before": "extern \"C\" {\n",
+        "code_after": "\n}",
+        "correct_answer": "    fn getpid() -> i32;"
+      },
+      {
+        "type": "concept",
+        "heading": "Unsoundness, UB & Safety Invariants",
+        "body": "An unsafe block that violates memory safety rules produces undefined behavior (UB). UB in Rust, like in C, means the compiler is allowed to do anything — generate incorrect code, delete your logic, or produce output that changes between compiler versions. The most dangerous UB scenarios in Rust: dereferencing a null or dangling pointer, creating two mutable references to the same data (aliasing mutable references), reading uninitialized memory, and calling a function through a pointer of the wrong type.\n\nA piece of code is 'sound' if it is impossible to trigger undefined behavior through its public API using only safe Rust. A piece of code is 'unsound' if a caller using only safe code can trigger UB by calling it. Unsoundness in a library is a critical security bug — it means safe Rust code can be made to violate memory safety. The Vec::set_len() method is an example of an unsafe method that can cause UB if the caller lies about the initialized length.\n\nFor security tooling, the practical rule: minimize unsafe surface area. Every line inside an unsafe block is a line you are personally vouching for. Extract unsafe operations into small, well-named functions with documented safety invariants (as a doc comment: '# Safety: caller must ensure ptr is non-null and valid for len bytes'). The rest of your tool stays in safe Rust. When something breaks, the bug is almost certainly in one of those small unsafe functions — not spread across your entire codebase."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Mark an Unsafe Function Signature",
+        "context": "Declare a Rust function named \"write_raw\" that is marked as unsafe, takes a raw mutable pointer named \"ptr\" of type \"*mut u8\" and a \"value\" of type \"u8\", and returns nothing. Type exactly: \"unsafe fn write_raw(ptr: *mut u8, value: u8) {\".",
+        "code_before": "// Declare a function that callers must call within an unsafe block\n",
+        "code_after": "\n    *ptr = value;\n}",
+        "correct_answer": "unsafe fn write_raw(ptr: *mut u8, value: u8) {"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "You are reviewing a Rust library that exposes a safe public function do_thing(). Inside it, an unsafe block creates a raw pointer from a reference, performs pointer arithmetic to access buf[offset], and dereferences it. The library documentation says the function is safe for all inputs. A security researcher calls do_thing() with offset = usize::MAX from safe Rust and causes a segfault. What is the correct classification of this bug?\n\nA) This is expected — raw pointer dereference in Rust always risks segfault and callers must use unsafe\nB) The library is unsound — a safe public API triggered memory-safety violation through safe caller code\nC) This is a logic bug, not a memory safety issue — segfaults are not considered UB in Rust\nD) The bug is in the caller's code — passing usize::MAX is misuse of a safe function",
+        "options": [
+          "Expected — raw pointer dereference always risks segfault; callers must use unsafe",
+          "The library is unsound — a safe API triggered memory-safety violation via safe caller code",
+          "Logic bug only — segfaults are not classified as UB in Rust",
+          "Caller's fault — passing usize::MAX to a safe function is misuse"
+        ],
+        "correct": 1,
+        "hint": "Recall the definition of soundness from the final concept step — specifically what it means when a safe public API can be used to trigger undefined behavior from safe caller code."
+      }
+    ]
+  }
+}

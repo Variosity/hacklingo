@@ -1,0 +1,342 @@
+{
+"m1-5": {
+"steps": [
+{
+"type": "concept",
+"heading": "Functions as Rooms",
+"body": "Think of an executing program like a person walking through a house. Every time a function is called, they enter a new room. They need a temporary workbench to store their local variables while in that room. \n\nThis workbench is the 'Stack Frame'. When the function finishes, the room is destroyed, the workbench is cleared, and the person walks back out into the previous room, picking up exactly where they left off."
+},
+{
+"type": "concept",
+"heading": "The Calling Convention",
+"body": "When a program calls a function, the caller and the callee must agree on how to pass data. This is the Calling Convention. In x64 Linux (System V AMD64 ABI), it's highly optimized: the first six arguments are not placed on the stack. They are passed directly into extremely fast CPU registers.\n\nThe order is always: RDI, RSI, RDX, RCX, R8, R9. If a function has more than six arguments, the rest are dumped onto the stack. Memorize this sequence. You cannot exploit 64-bit binaries without knowing it."
+},
+{
+"type": "code",
+"heading": "Setting up the Room",
+"body": "Every function starts with a 'Prologue' to set up its new stack frame, and ends with an 'Epilogue' to tear it down safely.",
+"code": "global _start\nsection .text\n\nmy_function:\n    ; --- THE PROLOGUE ---\n    ; Save the previous function's base pointer so we don't lose it\n    push rbp\n    \n    ; Set the current stack pointer (RSP) as our new base pointer (RBP)\n    ; RBP now securely anchors our new stack frame\n    mov rbp, rsp\n    \n    ; Allocate 32 bytes of space on the stack for our local variables\n    ; The stack grows downwards in memory, so we subtract\n    sub rsp, 0x20\n    \n    ; Function logic executes here...\n    \n    ; --- THE EPILOGUE ---\n    ; Restore the stack pointer, effectively deleting our local variables\n    mov rsp, rbp\n    \n    ; Restore the caller's base pointer\n    pop rbp\n    \n    ; Pop the saved return address off the stack and jump to it\n    ret"
+},
+{
+"type": "code_practice",
+"heading": "First Argument Register",
+"context": "Move the value `0x1337` into the first argument register, "rdi", preparing for a function call.",
+"code_before": "; Set up the first argument for the upcoming call\nmov ",
+"code_after": ", 0x1337\ncall target_function",
+"correct_answer": "rdi"
+},
+{
+"type": "code",
+"heading": "Making the Jump",
+"body": "The `call` instruction is actually doing two things at once: it pushes the address of the *next* instruction onto the stack (the return address), and then jumps to the target function.",
+"code": "section .text\n    ; We want to call a function: calculate(10, 20)\n    \n    ; Load the first argument into RDI\n    mov rdi, 10\n    \n    ; Load the second argument into RSI\n    mov rsi, 20\n    \n    ; The CALL instruction pushes the address of the next instruction \n    ; (the 'mov rax, 0') onto the top of the stack, then jumps to 'calculate'\n    call calculate\n    \n    ; When 'calculate' finishes and hits 'ret', the CPU pops the return address \n    ; off the stack and resumes execution exactly here\n    mov rax, 0"
+},
+{
+"type": "code_practice",
+"heading": "The Call Instruction",
+"context": "Use the "call" instruction to execute the `print_message` function.",
+"code_before": "mov rdi, message_pointer\n; Execute the function and save the return address\n",
+"code_after": " print_message",
+"correct_answer": "call"
+},
+{
+"type": "concept",
+"heading": "The Attacker's Target",
+"body": "Why do security researchers care so much about stack frames? Because of the Return Address.\n\nThe return address is literally just a memory pointer sitting on the stack, right next to the function's local variables. If an attacker overflows a local variable, they can rewrite the return address. When the function executes its `ret` instruction, the CPU blindly pops the attacker's fake address off the stack and jumps to it, handing over full control of the program."
+},
+{
+"type": "code_practice",
+"heading": "Restore Base Pointer",
+"context": "Use the "pop" instruction to restore the previous frame's base pointer from the stack.",
+"code_before": "; Epilogue execution\nmov rsp, rbp\n",
+"code_after": " rbp\nret",
+"correct_answer": "pop"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "A developer writes a C function: `update_user(int id, char *name, int access_level)`. If you disassemble this function, which register will contain the `access_level` value?",
+"options": [
+"RDI",
+"RSI",
+"RDX",
+"RCX"
+],
+"correct": 2,
+"hint": "Follow the System V AMD64 sequence: the third argument goes into the third register."
+}
+]
+},
+"m1-6": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Blind Printer",
+"body": "In C, the `printf` family of functions is magical. You provide a format string with placeholders like `%d` (for integers) or `%s` (for strings), and `printf` replaces them with your variables.\n\nBut `printf` is blind. It doesn't actually check how many variables you passed to it. If you give it the format string `%x %x %x`, it blindly assumes there are three variables waiting for it. It will pop three values off the stack or read three registers to fulfill those placeholders, even if you never supplied them."
+},
+{
+"type": "concept",
+"heading": "The Vulnerability",
+"body": "The bug occurs when a lazy programmer passes user input directly into `printf(user_input)` instead of safely isolating it like `printf(\"%s\", user_input)`.\n\nIf the attacker inputs the string `%p %p %p`, the vulnerable program will interpret the attacker's input as formatting instructions. Instead of printing the literal text '%p', `printf` starts aggressively leaking memory pointers straight off the execution stack, exposing base addresses, stack canaries, and passwords."
+},
+{
+"type": "code",
+"heading": "Safe vs Vulnerable",
+"body": "Here we see the exact syntax difference that turns a harmless log message into a devastating information leak.",
+"code": "#include <stdio.h>\n#include <string.h>\n\nvoid log_user_activity(char *username) {\n    char log_buffer[256];\n    strcpy(log_buffer, username); // Assume bounded in reality\n    \n    // SAFE: The format string is strictly defined by the programmer.\n    // If the username is "%x", it prints the literal characters "%x".\n    printf("Safe Log: %s\n", log_buffer);\n    \n    // VULNERABLE: The user controls the format string entirely.\n    // If the username is "%p %p %p", printf reads memory off the stack.\n    printf(log_buffer);\n    printf("\n");\n}"
+},
+{
+"type": "code_practice",
+"heading": "Secure the Print",
+"context": "Secure the print statement by providing the exact string specifier ""%s"" as the first argument to `printf`.",
+"code_before": "char *user_input = get_input();\n// Securely print the user input\nprintf(",
+"code_after": ", user_input);",
+"correct_answer": ""%s""
+},
+{
+"type": "code",
+"heading": "Leaking Stack Memory",
+"body": "Let's weaponize it. We use the pointer specifier `%p` to dump the raw hex values sitting on the stack.",
+"code": "#include <stdio.h>\n\nint main() {\n    // A secret value sitting on the stack that we shouldn't be able to read\n    long secret_admin_pin = 0xdeadbeef1337;\n    \n    // We feed a malicious format string into a vulnerable printf\n    // We spam %p to force printf to read past its own frame and down the stack\n    char *malicious_input = "%p %p %p %p %p %p";\n    \n    printf("[*] User supplied: ");\n    \n    // The vulnerability executes here.\n    // One of the outputted pointers will perfectly match 0xdeadbeef1337\n    printf(malicious_input);\n    printf("\n");\n    \n    return 0;\n}"
+},
+{
+"type": "code_practice",
+"heading": "Format Pointer Specifier",
+"context": "Supply the format specifier "%p" inside the string to leak a pointer.",
+"code_before": "// Craft the payload to leak the first value off the stack\nchar payload[] = "",
+"code_after": "";\nprintf(payload);",
+"correct_answer": "%p"
+},
+{
+"type": "concept",
+"heading": "From Read to Write",
+"body": "Information disclosure is bad, but Format Strings can also achieve Remote Code Execution. This is due to a dark, forgotten format specifier: `%n`.\n\nWhile `%d` and `%s` read data, `%n` WRITES data. Specifically, it counts the number of characters `printf` has outputted so far, and writes that integer into a memory address provided on the stack. By padding our output with spaces (e.g., `%100x`), we can manipulate that character count and write arbitrary values into memory, overwriting function pointers to hijack control flow."
+},
+{
+"type": "code_practice",
+"heading": "The Write Specifier",
+"context": "Provide the exact format specifier "%n" inside the string to trigger a memory write.",
+"code_before": "int bytes_written;\n// This writes the value 4 into the bytes_written variable\nprintf("AAAA",
+"code_after": "", &bytes_written);",
+"correct_answer": "%n"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "An attacker provides the payload `%08x.%08x.%08x` to a vulnerable program. What is the attacker attempting to accomplish?",
+"options": [
+"Overwrite the return address with the value 8.",
+"Crash the program by dividing by zero.",
+"Leak stack memory formatted as zero-padded 8-character hex strings.",
+"Bypass the ASLR memory protection directly."
+],
+"correct": 2,
+"hint": "The `%x` specifier is used for reading, not writing, and the numbers adjust the visual padding."
+}
+]
+},
+"m1-7": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Death of the Stack",
+"body": "Years ago, attackers could simply inject raw assembly code (shellcode) into a buffer and jump to it. Modern operating systems killed this with NX (No-Execute) / DEP (Data Execution Prevention). The OS marks the stack as 'read/write, but never execute'.\n\nIf the CPU tries to run instructions located on the stack, it triggers a hardware exception and the program instantly dies. To survive, attackers had to adapt. If they can't bring their own weapons, they have to use the weapons already lying around the room."
+},
+{
+"type": "concept",
+"heading": "Frankenstein's Exploit",
+"body": "Return Oriented Programming (ROP) bypasses NX by chaining together tiny snippets of executable code that already exist in the binary or system libraries (like `libc`). These snippets are called 'Gadgets'.\n\nA gadget is typically 2-3 instructions ending in a `ret` (return) instruction. The attacker overflows the stack not with shellcode, but with a carefully ordered list of memory addresses pointing to these gadgets. The CPU executes a gadget, hits the `ret`, pops the next address off the attacker's stack, and jumps to the next gadget."
+},
+{
+"type": "code",
+"heading": "Building the Chain",
+"body": "Using Python's `struct` module, we can pack 64-bit memory addresses into raw bytes to forge our malicious stack.",
+"code": "import struct\n\n# To build a ROP chain, we pack addresses as 64-bit Little-Endian integers\ndef p64(address):\n    return struct.pack("<Q", address)\n\n# Assume we leaked these addresses or the binary lacks ASLR / PIE\npop_rdi_ret = 0x401573    # Address of our gadget: pop rdi; ret\nbin_sh_addr = 0x402010    # Address of the string "/bin/sh"\nsystem_addr = 0x401050    # Address of system() function in the PLT\n\n# We build the payload string\npayload = b"A" * 72         # Fill the buffer and crush the saved RBP\n\n# Now we overwrite the return address with our first gadget\npayload += p64(pop_rdi_ret) "
+},
+{
+"type": "code_practice",
+"heading": "Pack the Address",
+"context": "Use the "p64" helper function to pack the `system_addr` variable into bytes.",
+"code_before": "payload += p64(pop_rdi_ret)\npayload += p64(bin_sh_addr)\n# Append the execution target\npayload += ",
+"code_after": "(system_addr)",
+"correct_answer": "p64"
+},
+{
+"type": "code",
+"heading": "Passing Arguments via ROP",
+"body": "To call `system(\"/bin/sh\")`, x64 calling conventions demand the string pointer sits in the `RDI` register. We use a `pop rdi; ret` gadget to achieve this.",
+"code": "# Continuing the ROP Chain logic...\n# The CPU executes the first address: pop rdi; ret\n# 'pop rdi' takes the very next 8 bytes off the stack and puts it into RDI\n\nrop_chain = b""\nrop_chain += p64(pop_rdi_ret)  # 1. CPU jumps here\nrop_chain += p64(bin_sh_addr)  # 2. This gets popped into RDI\n\n# Now RDI holds the pointer to "/bin/sh". The gadget hits 'ret'.\n# 'ret' pops the next 8 bytes off the stack and jumps to it.\n\nrop_chain += p64(system_addr)  # 3. CPU jumps to system(). Game over.\n\nprint(f"[*] Generated ROP Chain of {len(rop_chain)} bytes")"
+},
+{
+"type": "code_practice",
+"heading": "Assign Target Register",
+"context": "Assign the string value "pop rdi; ret" to clarify the purpose of the chosen gadget.",
+"code_before": "# We use the ropper tool to find a gadget that controls the first argument\ngadget_asm = "",
+"code_after": ""\ngadget_addr = 0x400686",
+"correct_answer": "pop rdi; ret"
+},
+{
+"type": "concept",
+"heading": "The Stack Pivot",
+"body": "Sometimes, the buffer you overflow is too small to hold a massive 20-gadget ROP chain. In these scenarios, you perform a 'Stack Pivot'.\n\nYou place your full ROP chain in a larger memory area (like the heap or a global variable). Then, you use your limited stack overflow to execute a single gadget like `pop rsp; ret` or `xchg rsp, rax; ret`. This forcefully rips the stack pointer away from its normal location and points it directly at your massive secondary payload. The CPU blindly continues executing the chain from the new location."
+},
+{
+"type": "code_practice",
+"heading": "Pivot the Stack",
+"context": "Set the pivot gadget instruction to "pop rsp; ret" to modify the stack pointer.",
+"code_before": "# Pivot the stack pointer to our heap payload\npivot_gadget = "",
+"code_after": ""\nchain += p64(get_address(pivot_gadget))",
+"correct_answer": "pop rsp; ret"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "Why does an attacker place the address of a string directly AFTER a `pop rdi; ret` gadget in a 64-bit ROP chain payload?",
+"options": [
+"Because the 'ret' instruction needs to print the string to the console.",
+"Because 'pop rdi' pulls the value currently sitting on top of the stack into the RDI register.",
+"Because strings must always be executed before functions in x64 architecture.",
+"Because it bypasses the ASLR randomization offset."
+],
+"correct": 1,
+"hint": "The CPU moves sequentially through the stack. Once it executes the gadget, the stack pointer is hovering directly over the next item."
+}
+]
+},
+"m2-1": {
+"steps": [
+{
+"type": "concept",
+"heading": "The Anti-Magic Language",
+"body": "Go (Golang) was built by Google to solve massive backend scaling problems. Its philosophy is brutal simplicity. There is no inheritance, no classes, no try/catch exceptions, and absolutely no hidden magic.\n\nIf C is a racecar that occasionally explodes, and Python is a comfortable minivan, Go is a bullet train. It is strongly typed, compiles instantly to a static binary, and has built-in concurrency primitives. For malware developers and red teamers, Go's ability to cross-compile self-contained binaries for Windows, Linux, and macOS simultaneously makes it the ultimate weaponization tool."
+},
+{
+"type": "concept",
+"heading": "Variables and Speed",
+"body": "Go is statically typed, but you rarely have to write the types. The short variable declaration `:=` infers the type automatically, making it feel as fast as writing Python while keeping the strict safety of C++.\n\nGo also enforces cleanliness at the compiler level. If you declare a variable or import a package and don't use it, your code will refuse to compile. It forces you to write lean, garbage-free code."
+},
+{
+"type": "code",
+"heading": "The Only Loop You Need",
+"body": "Go removed `while` and `do-while` loops. Everything is just a `for` loop, adaptable to any situation.",
+"code": "package main\nimport "fmt"\n\nfunc main() {\n    // Short variable declaration (infers int type)\n    targetCount := 3\n    \n    // Standard C-style initialization and loop\n    for i := 0; i < targetCount; i++ {\n        fmt.Printf("[*] Scanning target %d\n", i)\n    }\n    \n    // Go's version of a 'while' loop. Just drop the semicolons.\n    active := true\n    attempts := 0\n    for active {\n        attempts++\n        if attempts >= 2 {\n            active = false // Break the condition\n        }\n    }\n}"
+},
+{
+"type": "code_practice",
+"heading": "Short Declaration",
+"context": "Use the ":=" operator to initialize the `port` variable to 8080 without explicitly stating the `int` type.",
+"code_before": "func setup() {\n    // Initialize the server port dynamically\n    port ",
+"code_after": " 8080\n}",
+"correct_answer": ":="
+},
+{
+"type": "code",
+"heading": "Error Handling Reality",
+"body": "Go does not throw exceptions. Functions return multiple values, and conventionally, the last value is an `error` type. You must check it immediately.",
+"code": "package main\nimport (\n    "fmt"\n    "os"\n)\n\nfunc main() {\n    // os.Open returns two values: a File pointer, and an error object\n    file, err := os.Open("/etc/passwd")\n    \n    // If err is not nil, something went wrong. \n    // There are no Try/Catch blocks to save you.\n    if err != nil {\n        fmt.Println("[-] Exploit failed. Cannot read file:", err)\n        // Return exits the function cleanly\n        return \n    }\n    \n    fmt.Println("[+] File opened successfully.")\n    // Ensure we close the file when we are done\n    file.Close()\n}"
+},
+{
+"type": "code_practice",
+"heading": "Check the Error",
+"context": "Use the "nil" keyword to check if the error is empty.",
+"code_before": "data, err := readFile("config.json")\n// Check if an error occurred\nif err != ",
+"code_after": " {\n    panic("Crashing!")\n}",
+"correct_answer": "nil"
+},
+{
+"type": "concept",
+"heading": "The Defer Keyword",
+"body": "Memory leaks and dangling file handles are common bugs. Go solves this beautifully with the `defer` keyword.\n\nWhen you `defer` a function call, it pushes that execution onto a stack. The deferred function is guaranteed to run right before the surrounding function finishes, regardless of whether it returned naturally or panicked. It allows you to place your setup and teardown code immediately next to each other, so you never forget to close a socket or release a lock."
+},
+{
+"type": "code_practice",
+"heading": "Ensure Cleanup",
+"context": "Use the "defer" keyword to guarantee `conn.Close()` runs when the function exits.",
+"code_before": "conn, err := net.Dial("tcp", "10.0.0.5:22")\nif err == nil {\n    // Schedule the connection to be closed automatically later\n    ",
+"code_after": " conn.Close()\n}",
+"correct_answer": "defer"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "A developer writes a function that calls `defer file1.Close()` and then later calls `defer file2.Close()`. In what order are the files closed when the function exits?",
+"options": [
+"Simultaneously, using Go routines.",
+"file1 closes, then file2 closes.",
+"file2 closes, then file1 closes.",
+"It depends on which file was opened first."
+],
+"correct": 2,
+"hint": "Deferred calls are pushed onto a stack, which operates on a Last-In-First-Out (LIFO) basis."
+}
+]
+},
+"m2-2": {
+"steps": [
+{
+"type": "concept",
+"heading": "Networking Made Native",
+"body": "Writing a TCP server in C involves a nightmare of struct definitions, byte-order conversions, `socket()`, `bind()`, `listen()`, and `accept()`. \n\nGo abstracts all of this into the standard library's `net` package. Network streams in Go implement the exact same `Reader` and `Writer` interfaces as local files. This means code written to read data from a text file can instantly read data from a remote TCP socket with zero modifications. It is powerfully elegant."
+},
+{
+"type": "concept",
+"heading": "Listeners and Dialers",
+"body": "In Go networking, the paradigm is simple. Servers use `net.Listen` to open a port and wait for connections. Clients use `net.Dial` to reach out and connect to a listening port.\n\nOnce a connection is established, both sides receive a `net.Conn` object. You treat this object exactly like a two-way pipe: you write bytes into it to send data, and you read bytes out of it to receive data."
+},
+{
+"type": "code",
+"heading": "A Simple TCP Server",
+"body": "Here we stand up a listener on port 4444 that accepts a single connection, sends a message, and hangs up.",
+"code": "package main\nimport (\n    "fmt"\n    "net"\n)\n\nfunc main() {\n    // net.Listen creates our server listener\n    listener, err := net.Listen("tcp", ":4444")\n    if err != nil {\n        panic(err) // Crash loudly if port is taken\n    }\n    defer listener.Close() // Ensure the port is released on exit\n    \n    fmt.Println("[*] Listening on port 4444...")\n    \n    // Accept() blocks execution until a client connects\n    conn, err := listener.Accept()\n    if err == nil {\n        fmt.Println("[+] Connection received!")\n        // Write expects raw bytes, so we cast our string to a byte slice\n        conn.Write([]byte("Welcome to the honeypot.\n"))\n        conn.Close()\n    }\n}"
+},
+{
+"type": "code_practice",
+"heading": "Open the Port",
+"context": "Use the "net.Listen" function to start listening for incoming TCP connections.",
+"code_before": "func startServer() {\n    // Bind to all interfaces on port 9001\n    l, err := ",
+"code_after": "("tcp", ":9001")\n}",
+"correct_answer": "net.Listen"
+},
+{
+"type": "code",
+"heading": "The TCP Client",
+"body": "The client is even simpler. We just dial the target and read the response back into a buffer.",
+"code": "package main\nimport (\n    "fmt"\n    "net"\n    "bufio"\n)\n\nfunc main() {\n    // net.Dial connects outward to a target IP and port\n    conn, err := net.Dial("tcp", "127.0.0.1:4444")\n    if err != nil {\n        fmt.Println("[-] Target is down.")\n        return\n    }\n    defer conn.Close()\n    \n    // bufio allows us to read until we hit a specific delimiter like a newline\n    reader := bufio.NewReader(conn)\n    message, _ := reader.ReadString('\n')\n    \n    fmt.Printf("[+] Server says: %s", message)\n}"
+},
+{
+"type": "code_practice",
+"heading": "Connect to Target",
+"context": "Use the "net.Dial" function to reach out to the remote server.",
+"code_before": "func exploitTarget() {\n    // Initiate connection to the victim machine\n    conn, err := ",
+"code_after": "("tcp", "10.10.10.50:21")\n}",
+"correct_answer": "net.Dial"
+},
+{
+"type": "concept",
+"heading": "Effortless Concurrency",
+"body": "A server that can only handle one client at a time is useless. In older languages, handling multiple clients requires complex multi-threading or async event loops. \n\nGo uses 'goroutines'. A goroutine is a lightweight virtual thread managed by the Go runtime. By simply putting the word `go` in front of a function call, Go rips that function execution off the main thread and runs it concurrently in the background. A Go server can easily spin up 10,000 goroutines to handle 10,000 concurrent network connections without breaking a sweat."
+},
+{
+"type": "code_practice",
+"heading": "Spawn a Goroutine",
+"context": "Use the "go" keyword to execute `handleConnection` concurrently.",
+"code_before": "for {\n    conn, _ := listener.Accept()\n    // Pass the connection to a background worker instantly\n    ",
+"code_after": " handleConnection(conn)\n}",
+"correct_answer": "go"
+},
+{
+"type": "quiz",
+"heading": "Knowledge Check",
+"question": "In a highly concurrent Go network server, you wrap the client handling logic in a function and call it using `go handleClient(conn)`. What happens when the server receives three simultaneous connections?",
+"options": [
+"The server queues them and handles them one by one.",
+"The main thread crashes due to a resource lock.",
+"The server immediately spawns three independent background goroutines, handling all clients simultaneously.",
+"The Go runtime forces the OS to create three heavy CPU threads."
+],
+"correct": 2,
+"hint": "The keyword pushes the execution into the background instantly, freeing the main thread to immediately accept the next connection."
+}
+]
+}
+}

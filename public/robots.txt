@@ -1,0 +1,1 @@
+User-agent: *\nAllow: /\nSitemap: https://hacklingo.com/sitemap.xml

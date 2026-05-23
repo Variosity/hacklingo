@@ -1,0 +1,342 @@
+{
+  "mod_bru_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Parser's Dilemma",
+        "body": "In cybersecurity, parsers are the front line. They take untrusted, raw bytes from the network and try to make sense of them. In languages like C, a single off-by-one error in a parser leads to a buffer overflow and total system compromise. Rust changes the game by enforcing memory safety at compile time, ensuring your parser can't be tricked into crashing or leaking secrets."
+      },
+      {
+        "type": "concept",
+        "heading": "Ownership and Slices",
+        "body": "Rust uses 'Ownership' to manage memory without a garbage collector. When parsing network packets, we often use 'slices' (&[u8]). A slice is a view into a block of memory. Rust's borrow checker ensures that as long as you have a slice of a packet, the underlying data cannot be modified or deleted, preventing 'use-after-free' vulnerabilities that plague traditional network tools."
+      },
+      {
+        "type": "code",
+        "heading": "Parsing an Ethernet Header",
+        "body": "Using the 'nom' library, we can build a parser that is both fast and safe. This snippet defines a structure for an Ethernet header and a function to parse it.",
+        "code": "use nom::{IResult, bytes::complete::take};\n\n#[derive(Debug)]\nstruct EthernetHeader {\n    dest_mac: [u8; 6],\n    src_mac: [u8; 6],\n    ethertype: [u8; 2],\n}\n\nfn parse_ethernet(input: &[u8]) -> IResult<&[u8], EthernetHeader> {\n    let (input, dest_mac) = take(6usize)(input)?;\n    let (input, src_mac) = take(6usize)(input)?;\n    let (input, ethertype) = take(2usize)(input)?;\n\n    Ok((input, EthernetHeader {\n        dest_mac: dest_mac.try_into().unwrap(),\n        src_mac: src_mac.try_into().unwrap(),\n        ethertype: ethertype.try_into().unwrap(),\n    }))\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Take Bytes",
+        "context": "Use the \"take\" function from nom to consume exactly 4 bytes from the input.",
+        "code_before": "let (input, data) = ",
+        "after": "(4usize)(input)?;",
+        "correct_answer": "take"
+      },
+      {
+        "type": "code",
+        "heading": "Safe Integer Conversion",
+        "body": "Attackers love to send malformed lengths to cause integer overflows. Rust's 'try_into()' and 'from_be_bytes()' methods make it easy to handle network-endian data safely.",
+        "code": "fn get_payload_length(header_bytes: &[u8]) -> u16 {\n    // Extract 2 bytes and convert from Big Endian (network order)\n    let length_bytes: [u8; 2] = header_bytes[0..2].try_into().expect(\"Slice to array failed\");\n    let length = u16::from_be_bytes(length_bytes);\n    \n    println!(\"Parsed payload length: {}\", length);\n    length\n}\n\nlet raw_data = [0x05, 0xDC]; // 1500 in hex\nget_payload_length(&raw_data);"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Big Endian Conversion",
+        "context": "Use the \"u16::from_be_bytes\" method to convert a 2-byte array into a 16-bit integer in Big Endian format.",
+        "code_before": "let val = ",
+        "code_after": "(my_bytes);",
+        "correct_answer": "u16::from_be_bytes"
+      },
+      {
+        "type": "concept",
+        "heading": "Zero-Copy Parsing",
+        "body": "Performance matters when you're processing gigabits of traffic. Rust allows for 'zero-copy' parsing, where you create structures that point directly to the original buffer instead of copying data into new variables. This is achieved using 'lifetimes' (<'a>), which tell the compiler exactly how long the references inside your structure are valid."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define a Slice",
+        "context": "Declare a variable named \"packet\" as a slice of unsigned 8-bit integers.",
+        "code_before": "let ",
+        "code_after": ": &[u8] = &[0x45, 0x00, 0x00, 0x28];",
+        "correct_answer": "packet"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Why is Rust considered safer than C for writing network protocol parsers?",
+        "options": [
+          "Rust code is automatically encrypted before being sent over the network.",
+          "Rust's compiler prevents memory errors like buffer overflows and use-after-free at compile time.",
+          "Rust is a slower language, which gives the CPU more time to check for errors.",
+          "Rust does not support pointers, so memory cannot be accessed directly."
+        ],
+        "correct": 1,
+        "hint": "Think about the role of the 'borrow checker' and 'ownership' in Rust's design."
+      }
+    ]
+  },
+  "mod_bru_2": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Kernel's Sandbox",
+        "body": "eBPF (extended Berkeley Packet Filter) is a revolutionary technology that lets you run custom code inside the Linux kernel without changing the kernel source or loading a risky module. It's like a secure sandbox for the OS core. For defenders, eBPF is the ultimate telemetry tool, allowing you to observe every system call, network packet, and file access with near-zero overhead."
+      },
+      {
+        "type": "concept",
+        "heading": "Hooks and Maps",
+        "body": "eBPF programs are event-driven. You 'attach' your code to a 'hook'—such as a kprobe (kernel function entry) or a tracepoint. When the event occurs, your code runs. To get data back to user-space (where your dashboard lives), eBPF uses 'Maps'—efficient key-value stores that act as a bridge between the kernel's high-speed world and your analysis tools."
+      },
+      {
+        "type": "code",
+        "heading": "Tracing Execve with Rust",
+        "body": "Using the 'Aya' library, we can write eBPF programs in Rust. This kernel-side code triggers every time a new process is started via the 'execve' system call.",
+        "code": "#![no_std]\n#![no_main]\n\nuse aya_bpf::{macros::kprobe, programs::ProbeContext};\nuse aya_log_ebpf::info;\n\n#[kprobe(name=\"trace_exec\")]\npub fn trace_exec(ctx: ProbeContext) -> u32 {\n    match try_trace_exec(ctx) {\n        Ok(ret) => ret,\n        Err(_) => 1,\n    }\n}\n\nfn try_trace_exec(ctx: ProbeContext) -> Result<u32, u32> {\n    info!(&ctx, \"[!] Process execution detected!\");\n    Ok(0)\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define Kprobe",
+        "context": "Use the \"kprobe\" macro to define a hook for a kernel function.",
+        "code_before": "#[",
+        "code_after": "(name=\"my_hook\")]",
+        "correct_answer": "kprobe"
+      },
+      {
+        "type": "code",
+        "heading": "Reading Process Names",
+        "body": "In the kernel, we can't just access memory directly. We must use helpers to safely copy data from the task structure. This snippet retrieves the name of the current process.",
+        "code": "use aya_bpf::helpers::gen::bpf_get_current_comm;\n\nfn get_name() -> [u8; 16] {\n    let mut comm = [0u8; 16];\n    // bpf_get_current_comm fills the buffer with the process name\n    unsafe {\n        bpf_get_current_comm(&mut comm as *mut _ as *mut core::ffi::c_void, 16);\n    }\n    comm\n}\n\n// Usage inside an eBPF program\nlet name = get_name();"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Get Process Name",
+        "context": "Use the helper function \"bpf_get_current_comm\" to retrieve the name of the current task.",
+        "code_before": "unsafe { ",
+        "code_after": "(&mut buf, 16); }",
+        "correct_answer": "bpf_get_current_comm"
+      },
+      {
+        "type": "concept",
+        "heading": "The Verifier's Veto",
+        "body": "The most important part of eBPF is the 'Verifier'. Before your code is allowed to run in the kernel, the Verifier checks it to ensure it can't crash the system, loop forever, or access unauthorized memory. If your code is too complex or potentially unsafe, the Verifier will reject it. This is why eBPF is considered much safer than traditional kernel modules."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Log Info",
+        "context": "Use the \"info!\" macro from aya_log_ebpf to log a message to the trace buffer.",
+        "code_before": "",
+        "code_after": "(&ctx, \"Event triggered\");",
+        "correct_answer": "info!"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "What is the primary advantage of using eBPF for security monitoring compared to standard user-space logging?",
+        "options": [
+          "eBPF programs are easier to write than Python scripts.",
+          "eBPF provides deep, tamper-resistant visibility into kernel events with minimal performance impact.",
+          "eBPF can only be used to monitor network traffic, not system calls.",
+          "eBPF programs run in user-space, making them more secure."
+        ],
+        "correct": 1,
+        "hint": "Consider where eBPF code executes and what it has access to."
+      }
+    ]
+  },
+  "mod_bru_3": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Pattern Matcher",
+        "body": "YARA is the 'Swiss Army knife' for malware researchers. It allows you to create descriptions of malware families based on textual or binary patterns. However, running a YARA engine on a production server is risky—if the engine has a bug, a malicious file could exploit the scanner itself. Writing a secure engine in Rust ensures that the scanner remains a fortress."
+      },
+      {
+        "type": "concept",
+        "heading": "Rules and Conditions",
+        "body": "A YARA rule consists of two parts: 'strings' (the patterns to look for) and a 'condition' (the logic that determines a match). A secure engine must parse these rules carefully, ensuring that complex regex patterns don't lead to 'ReDoS' (Regular Expression Denial of Service) attacks that could freeze the entire security stack."
+      },
+      {
+        "type": "code",
+        "heading": "A Simple YARA Rule",
+        "body": "This is a standard YARA rule designed to detect a common web shell. We will use this as input for our Rust-based scanner.",
+        "code": "rule WebShell_Detect {\n    strings:\n        $php_tag = \"<?php\"\n        $eval_func = \"eval(base64_decode(\"\n        $magic_bytes = { 7f 45 4c 46 } // ELF header\n\n    condition:\n        $php_tag and $eval_func or $magic_bytes\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define Hex String",
+        "context": "In YARA, hex strings are enclosed in curly braces. Define a string named \"$hex_val\" with the bytes \"DE AD BE EF\".",
+        "code_before": "$hex_val = { ",
+        "code_after": " }",
+        "correct_answer": "DE AD BE EF"
+      },
+      {
+        "type": "code",
+        "heading": "Scanning with Rust",
+        "body": "Using the 'yara-rust' bindings, we can safely compile and execute rules against a buffer. Rust's error handling ensures we catch malformed rules before they are used.",
+        "code": "use yara::Compiler;\n\nfn scan_buffer(data: &[u8], rule_str: &str) {\n    let compiler = Compiler::new().unwrap();\n    let compiler = compiler.add_rules_str(rule_str).expect(\"Failed to parse rule\");\n    let rules = compiler.compile_rules().expect(\"Failed to compile\");\n\n    let results = rules.scan_mem(data, 10).expect(\"Scan failed\");\n    for matched_rule in results {\n        println!(\"[!] Match found: {}\", matched_rule.identifier);\n    }\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Scan Memory",
+        "context": "Use the \"scan_mem\" method on the 'rules' object to scan a byte slice.",
+        "code_before": "let results = rules.",
+        "code_after": "(data, 30);",
+        "correct_answer": "scan_mem"
+      },
+      {
+        "type": "concept",
+        "heading": "Scanning at Scale",
+        "body": "When scanning thousands of files, memory management is key. A secure engine should use 'streaming' to scan large files in chunks rather than loading the entire file into RAM. Rust's 'Read' trait and 'BufReader' make it easy to implement this safely, ensuring that a 10GB 'zip bomb' doesn't crash your scanner with an Out-of-Memory (OOM) error."
+      },
+      {
+        "type": "code_practice",
+        "heading": "New Compiler",
+        "context": "Create a new instance of a YARA compiler using \"Compiler::new()\".",
+        "code_before": "let c = ",
+        "code_after": ".unwrap();",
+        "correct_answer": "Compiler::new()"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "What is a 'ReDoS' attack in the context of a YARA rule engine?",
+        "options": [
+          "An attack that replaces the YARA rules with malicious ones.",
+          "A specially crafted regular expression that takes an exponential amount of time to process, causing a Denial of Service.",
+          "A technique to bypass YARA by renaming the malware file.",
+          "An attack that exploits a buffer overflow in the YARA engine's string matcher."
+        ],
+        "correct": 1,
+        "hint": "Focus on the 'Regular Expression' part of the acronym."
+      }
+    ]
+  },
+  "mod_bru_boss": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Rust Sentinel",
+        "body": "In this boss module, you'll combine everything you've learned to build a lightweight, high-performance EDR (Endpoint Detection and Response) agent in Rust. This agent will monitor process executions using eBPF, scan new binaries with YARA, and report anomalies to a central server—all while consuming less than 1% of the CPU."
+      },
+      {
+        "type": "concept",
+        "heading": "Agent Architecture",
+        "body": "Our EDR agent has three main components: the 'Collector' (eBPF kernel code), the 'Analyzer' (Rust user-space logic), and the 'Reporter' (Async networking). We use 'channels' (mpsc) to pass events between these components safely. This architecture ensures that even if the Reporter is slow due to network lag, the Collector continues to grab events without dropping them."
+      },
+      {
+        "type": "code",
+        "heading": "The Event Loop",
+        "body": "This is the heart of the EDR agent. It listens for events from the kernel and dispatches them to the YARA scanner.",
+        "code": "use tokio::sync::mpsc;\n\nstruct EdrEvent { pid: u32, comm: String }\n\nasync fn run_agent(mut rx: mpsc::Receiver<EdrEvent>) {\n    while let Some(event) = rx.recv().await {\n        println!(\"[*] Analyzing new process: {} (PID: {})\", event.comm, event.pid);\n        \n        // Perform YARA scan in a separate thread to avoid blocking the loop\n        tokio::spawn(async move {\n            if perform_scan(&event.comm) {\n                trigger_alert(event);\n            }\n        });\n    }\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Receive Event",
+        "context": "Use the \"recv\" method on the 'rx' receiver to wait for the next event asynchronously.",
+        "code_before": "while let Some(event) = rx.",
+        "code_after": ".await { }",
+        "correct_answer": "recv()"
+      },
+      {
+        "type": "code",
+        "heading": "Async Reporting",
+        "body": "When a threat is detected, we need to alert the SIEM. We use 'reqwest' for asynchronous HTTP reporting to ensure the agent doesn't hang while waiting for a server response.",
+        "code": "use reqwest::Client;\n\nasync fn trigger_alert(event: EdrEvent) -> Result<(), reqwest::Error> {\n    let client = Client::new();\n    let payload = serde_json::json!({\n        \"alert_type\": \"malicious_process\",\n        \"pid\": event.pid,\n        \"name\": event.comm\n    });\n\n    client.post(\"https://siem.local/alerts\")\n        .json(&payload)\n        .send()\n        .await?;\n\n    Ok(())\n}"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Spawn Task",
+        "context": "Use \"tokio::spawn\" to run a piece of code in a background task.",
+        "code_before": "",
+        "code_after": "(async move { do_work().await });",
+        "correct_answer": "tokio::spawn"
+      },
+      {
+        "type": "concept",
+        "heading": "Resource Constraints",
+        "body": "A good EDR agent is a 'silent' agent. You must implement 'rate limiting' to ensure that if a system is under a heavy load (like a compiler running), your agent doesn't overwhelm the CPU. In Rust, we can use 'semaphores' to limit the number of concurrent YARA scans, ensuring the agent stays within its resource budget even during peak activity."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Define Payload",
+        "context": "Use the \"serde_json::json!\" macro to create a JSON payload for the alert.",
+        "code_before": "let data = ",
+        "code_after": "({\"id\": 1});",
+        "correct_answer": "serde_json::json!"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Why is an asynchronous architecture (using Tokio) beneficial for an EDR agent?",
+        "options": [
+          "It makes the code run in the kernel instead of user-space.",
+          "It allows the agent to handle multiple tasks (like scanning and reporting) concurrently without blocking the main event loop.",
+          "It automatically encrypts all data stored on the disk.",
+          "It prevents the user from terminating the EDR process."
+        ],
+        "correct": 1,
+        "hint": "Think about what happens if the agent has to wait for a slow network response."
+      }
+    ]
+  },
+  "mod_cryp_1": {
+    "steps": [
+      {
+        "type": "concept",
+        "heading": "The Secret Language",
+        "body": "Cryptography is the foundation of digital trust. At its core, it's about transforming a readable message (plaintext) into an unreadable mess (ciphertext) so that only someone with the right 'key' can turn it back. Without it, every password you type and every credit card you use would be visible to anyone on the network."
+      },
+      {
+        "type": "concept",
+        "heading": "Symmetric: One Key",
+        "body": "Symmetric encryption is like a physical safe: the same key that locks it also unlocks it. It's incredibly fast and efficient for encrypting large amounts of data (like your hard drive). The most famous example is AES (Advanced Encryption Standard). The challenge, however, is 'key distribution'—how do you get the key to the other person without an attacker stealing it?"
+      },
+      {
+        "type": "code",
+        "heading": "AES Encryption in Python",
+        "body": "Using the 'cryptography' library, we can perform symmetric encryption. Note that we must use a 'nonce' (number used once) to ensure the same plaintext doesn't result in the same ciphertext.",
+        "code": "from cryptography.hazmat.primitives.ciphers.aead import AESGCM\nimport os\n\n# Generate a random 256-bit key\nkey = AESGCM.generate_key(bit_length=256)\naesgcm = AESGCM(key)\n\nnonce = os.urandom(12) # GCM recommended nonce length\ndata = b\"Top Secret Message\"\n\n# Encrypt the data\nciphertext = aesgcm.encrypt(nonce, data, None)\nprint(f\"Ciphertext: {ciphertext.hex()}\")\n\n# Decrypt the data\nplaintext = aesgcm.decrypt(nonce, ciphertext, None)\nprint(f\"Decrypted: {plaintext.decode()}\")"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Generate Key",
+        "context": "Use the \"AESGCM.generate_key\" method with a 'bit_length' of 256 to create a secure key.",
+        "code_before": "my_key = ",
+        "code_after": "(bit_length=256)",
+        "correct_answer": "AESGCM.generate_key"
+      },
+      {
+        "type": "code",
+        "heading": "Asymmetric: Two Keys",
+        "body": "Asymmetric encryption (like RSA or Elliptic Curve) uses a pair of keys: a Public Key (which everyone can see) and a Private Key (which only you have). If someone encrypts a message with your Public Key, only your Private Key can decrypt it. This solves the key distribution problem but is much slower than symmetric encryption.",
+        "code": "from cryptography.hazmat.primitives.asymmetric import rsa\nfrom cryptography.hazmat.primitives import hashes\nfrom cryptography.hazmat.primitives.asymmetric import padding\n\n# Generate a private key\nprivate_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)\npublic_key = private_key.public_key()\n\nmessage = b\"Encrypted with Public Key\"\n\n# Encrypt using the public key\nciphertext = public_key.encrypt(\n    message,\n    padding.OAEP(mgf=padding.MGF1(algorithm=hashes.SHA256()), algorithm=hashes.SHA256(), label=None)\n)"
+      },
+      {
+        "type": "code_practice",
+        "heading": "Get Public Key",
+        "context": "Call the \"public_key()\" method on the 'private_key' object to derive the corresponding public key.",
+        "code_before": "pub = private_key.",
+        "code_after": "()",
+        "correct_answer": "public_key"
+      },
+      {
+        "type": "concept",
+        "heading": "The Hybrid Approach",
+        "body": "In the real world (like HTTPS), we use both. We use Asymmetric encryption to safely exchange a temporary 'session key', and then we use that session key with Symmetric encryption for the rest of the conversation. This gives us the security of the public/private key pair with the blazing speed of symmetric ciphers."
+      },
+      {
+        "type": "code_practice",
+        "heading": "Generate Random Nonce",
+        "context": "Use \"os.urandom(12)\" to generate a secure 12-byte nonce for AES-GCM.",
+        "code_before": "nonce = ",
+        "code_after": "",
+        "correct_answer": "os.urandom(12)"
+      },
+      {
+        "type": "quiz",
+        "heading": "Knowledge Check",
+        "question": "Why don't we use Asymmetric encryption (like RSA) to encrypt entire hard drives?",
+        "options": [
+          "It is not secure enough for long-term storage.",
+          "It is computationally too slow for large amounts of data.",
+          "It requires an active internet connection to work.",
+          "Private keys are too large to store on a disk."
+        ],
+        "correct": 1,
+        "hint": "Compare the performance characteristics of symmetric and asymmetric algorithms."
+      }
+    ]
+  }
+}
